@@ -29,6 +29,7 @@ function ferraStudyModule(root) {
   function makeCfg(P, mat, cls, role, grade, coilExtra) {
     return { cls, role, gmaxDetect: P.gmaxDetect, torqueGapMax: P.torqueGapMax, coilExtra, coilRmin: P.coilRmin,
       powderMur: P.powderMur, powderJs: P.powderJs, steelDefs: mat.defs,
+      bridgeMax: P.bridgeMax, bridgePicks: P.bridgePicks, bridgeOff: P.bridgeOff,
       steelMat: grade.map(g => (g != null && mat.index[g] != null ? mat.index[g] : 0)) };
   }
 

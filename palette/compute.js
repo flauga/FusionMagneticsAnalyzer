@@ -8,7 +8,7 @@
  * Engine commands (each is one short job, so the UI can drop stale work between calls):
  *   load  {bodies, hmax, cfg, gaps}        build grid + problem (gaps passed in so both threads agree)
  *   solve {NI, from, keep, fields}         nonlinear solve; warm-start from / store into a named slot
- *   sens  {NI, eps, kind, body}            perturbed solve from the 'op' slot: kind 'ni' | 'all' | 'body'
+ *   sens  {NI, eps, kind, body, bridge}    perturbed solve from the 'op' slot: kind 'ni' | 'all' | 'body' | 'bridge'
  */
 
 function ferraEngine(F) {
@@ -48,21 +48,31 @@ function ferraEngine(F) {
       d.scale = (d.scale || 1) * (1 + a.eps);
       return F.steelTable(d);
     };
+    // ignored saturation bridges keep their own steel in the 'all' and 'body' perturbations
+    const brs = prob.bridges || [], bc = prob.bridgeCell;
+    const ignored = c => bc && bc[c] > 0 && brs[bc[c] - 1].ignore;
     let p = prob, NI = a.NI;
     if (a.kind === 'ni') NI = a.NI * (1 + a.eps);
     else if (a.kind === 'all') {
-      const tables = prob.steelDefs.map(bump);
-      p = Object.assign({}, prob, { mats: Object.assign({}, prob.mats, { tables, steel: tables[0] }) });
-    } else if (a.kind === 'body') {
+      const nd = prob.steelDefs.length, tables = prob.steelDefs.map(bump).concat(prob.mats.tables);
+      let cm = prob.cellMat;
+      if (brs.some(b => b.ignore)) {
+        cm = Int8Array.from(prob.cellMat);
+        for (let c = 0; c < cm.length; c++) if (cm[c] >= F.M_STEEL_BASE && ignored(c)) cm[c] += nd; // -> unbumped copy
+      }
+      p = Object.assign({}, prob, { cellMat: cm, mats: Object.assign({}, prob.mats, { tables, steel: tables[0] }) });
+    } else if (a.kind === 'body' || a.kind === 'bridge') {
       const cm = Int8Array.from(prob.cellMat), cb = prob.G.cellBody;
+      const br = a.kind === 'bridge' ? brs[a.bridge] : null, body = br ? br.body : a.body;
+      const hit = br ? c => bc[c] === a.bridge + 1 : c => cb[c] === body && !ignored(c);
       let n = 0;
-      for (let c = 0; c < cm.length; c++) if (cb[c] === a.body && F.isSteelCode(cm[c])) { cm[c] = F.M_STEEL_P; n++; }
-      if (!n) return { kind: a.kind, body: a.body, stats: null, converged: true };
-      const def = prob.steelDefs[prob.steelMat[a.body] || 0];
+      for (let c = 0; c < cm.length; c++) if (hit(c) && F.isSteelCode(cm[c])) { cm[c] = F.M_STEEL_P; n++; }
+      if (!n) return { kind: a.kind, body: a.body, bridge: a.bridge, stats: null, converged: true };
+      const def = prob.steelDefs[prob.steelMat[body] || 0];
       p = Object.assign({}, prob, { cellMat: cm, mats: Object.assign({}, prob.mats, { steelP: bump(def) }) });
     } else throw new Error('Unknown sensitivity kind ' + a.kind);
     const sol = F.solveNI(p, NI, base);
-    return { kind: a.kind, body: a.body, stats: F.gapFieldStats(p, sol), converged: sol.converged };
+    return { kind: a.kind, body: a.body, bridge: a.bridge, stats: F.gapFieldStats(p, sol), converged: sol.converged };
   }
 
   return { load, solve, sens };

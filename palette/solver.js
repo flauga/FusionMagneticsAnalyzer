@@ -290,6 +290,123 @@ function ferraSolverModule(root) {
     return groups;
   }
 
+  // ---------------------------------------------------------------- saturation bridges
+  /** Per steel cell: length of the same-body run through it along r (tr) and along z (tz), mm. */
+  function steelRuns(G, isSteel) {
+    const { nr, nz, rs, zs, cellBody } = G;
+    const tr = new Float64Array(nr * nz), tz = new Float64Array(nr * nz);
+    for (let j = 0; j < nz; j++) {
+      let i = 0;
+      while (i < nr) {
+        const b = cellBody[j * nr + i];
+        if (!isSteel(b)) { i++; continue; }
+        let k = i;
+        while (k < nr && cellBody[j * nr + k] === b) k++;
+        for (let q = i; q < k; q++) tr[j * nr + q] = rs[k] - rs[i];
+        i = k;
+      }
+    }
+    for (let i = 0; i < nr; i++) {
+      let j = 0;
+      while (j < nz) {
+        const b = cellBody[j * nr + i];
+        if (!isSteel(b)) { j++; continue; }
+        let k = j;
+        while (k < nz && cellBody[k * nr + i] === b) k++;
+        for (let q = j; q < k; q++) tz[q * nr + i] = zs[k] - zs[j];
+        j = k;
+      }
+    }
+    return { tr, tz };
+  }
+
+  /**
+   * Saturation bridges: thin necks inside one steel body (a notch that leaves a thin web holding two halves of a
+   * ring together). They saturate by design and short a little flux; thickening them would add bypass flux, so
+   * they must not be read as the steel bottleneck.
+   * Auto: connected cells whose local thickness (shorter of the r and z runs through the body) is <= opt.bridgeMax
+   * mm, and whose removal splits the body into at least two pieces each >= 4x the neck's section area.
+   * opt.bridgePicks [[r, z]]: manual bridges (the thin region around the clicked cell). opt.bridgeOff [[r, z]]:
+   * auto bridges within 1.5 mm of these points are reported but not ignored.
+   * Returns [{body, cells, areaMM2, volMM3, r, z, thickness, auto, ignore, key}].
+   */
+  function detectBridges(G, cls, opt) {
+    opt = opt || {};
+    const { nr, nz, rs, zs, cellBody } = G, nc = nr * nz;
+    const tmax = opt.bridgeMax > 0 ? opt.bridgeMax : 0, picks = opt.bridgePicks || [], off = opt.bridgeOff || [];
+    const out = [];
+    if (!tmax && !picks.length) return out;
+    const isSteel = b => b >= 0 && cls[b] === 'steel';
+    const { tr, tz } = steelRuns(G, isSteel);
+    const thick = c => Math.min(tr[c], tz[c]);
+    const area = c => (rs[(c % nr) + 1] - rs[c % nr]) * (zs[((c / nr) | 0) + 1] - zs[(c / nr) | 0]);
+    const nbrs = (c, f) => {
+      const i = c % nr, j = (c / nr) | 0;
+      if (i > 0) f(c - 1);
+      if (i < nr - 1) f(c + 1);
+      if (j > 0) f(c - nr);
+      if (j < nz - 1) f(c + nr);
+    };
+    const taken = new Uint8Array(nc); // cell belongs to a bridge already
+    const grow = (seed, ok, seen) => {
+      const b = cellBody[seed], cells = [seed], st = [seed];
+      seen[seed] = 1;
+      while (st.length) {
+        const c = st.pop();
+        nbrs(c, n => { if (!seen[n] && cellBody[n] === b && ok(n)) { seen[n] = 1; cells.push(n); st.push(n); } });
+      }
+      return cells;
+    };
+    const make = (cells, auto) => {
+      let A = 0, V = 0, ra = 0, za = 0, ta = 0;
+      for (const c of cells) {
+        const a = area(c), r = 0.5 * (rs[c % nr] + rs[(c % nr) + 1]), z = 0.5 * (zs[(c / nr) | 0] + zs[((c / nr) | 0) + 1]);
+        A += a; V += TWO_PI * r * a; ra += r * a; za += z * a; ta += thick(c) * a;
+        taken[c] = 1;
+      }
+      const r = ra / A, z = za / A;
+      const ignore = !(auto && off.some(([pr, pz]) => Math.hypot(pr - r, pz - z) < 1.5));
+      return { body: cellBody[cells[0]], cells, areaMM2: A, volMM3: V, r, z, thickness: ta / A, auto, ignore,
+        key: r.toFixed(1) + ',' + z.toFixed(1) };
+    };
+    // removing `cells` leaves >= 2 pieces of the body each >= minA (mm^2)?
+    const splits = (cells, minA) => {
+      const b = cellBody[cells[0]], inK = new Uint8Array(nc), seen = new Uint8Array(nc);
+      for (const c of cells) inK[c] = 1;
+      let big = 0;
+      for (const c of cells) {
+        nbrs(c, n => {
+          if (big >= 2 || inK[n] || seen[n] || cellBody[n] !== b) return;
+          let A = 0;
+          for (const q of grow(n, q => !inK[q], seen)) A += area(q);
+          if (A >= minA) big++;
+        });
+        if (big >= 2) return true;
+      }
+      return false;
+    };
+    if (tmax) {
+      const seen = new Uint8Array(nc), thin = c => thick(c) <= tmax + 1e-9;
+      for (let c = 0; c < nc; c++) {
+        if (seen[c] || !isSteel(cellBody[c]) || !thin(c)) continue;
+        const cells = grow(c, thin, seen);
+        let A = 0;
+        for (const q of cells) A += area(q);
+        if (splits(cells, 4 * A)) out.push(make(cells, true));
+      }
+    }
+    const loc = (xs, x) => { if (x < xs[0] || x > xs[xs.length - 1]) return -1; let k = 0; while (k < xs.length - 2 && xs[k + 1] < x) k++; return k; };
+    for (const [r, z] of picks) {
+      const i = loc(rs, r), j = loc(zs, z);
+      if (i < 0 || j < 0) continue;
+      const c = j * nr + i;
+      if (!isSteel(cellBody[c]) || taken[c]) continue;
+      const t0 = thick(c) * 1.25 + 0.05, seen = new Uint8Array(nc);
+      out.push(make(grow(c, q => !taken[q] && thick(q) <= t0, seen), false));
+    }
+    return out;
+  }
+
   // ---------------------------------------------------------------- discretisation
   // Each grid cell is split into two right triangles (P1 FEM):
   //   T1 = (00,10,11)   T2 = (00,11,01)
@@ -548,8 +665,12 @@ function ferraSolverModule(root) {
     const { nr, nz } = G;
     const NR = S.NR;
     const bodies = [];
-    for (let b = 0; b < nBodies; b++) bodies.push({ W: 0, V: 0, BV: 0, sat: 0, pairs: [], max: 0, hr: 0, hz: 0 });
+    for (let b = 0; b < nBodies; b++) bodies.push({ W: 0, V: 0, BV: 0, sat: 0, pairs: [], max: 0, hr: 0, hz: 0, hotV: 0 });
     const gapsW = new Float64Array(prob.gaps.length + 1);
+    // ignored saturation bridges: kept out of their body's saturation stats, MMF reported on its own
+    const brs = prob.bridges || [], bc = prob.bridgeCell;
+    const brO = brs.map(() => ({ W: 0, V: 0, BV: 0, max: 0, sat: 0 }));
+    const satCell = new Uint8Array(nr * nz);
     let airW = 0, totW = 0, psiCoil = 0, coilA = 0, psiMax = 0;
     for (let k = 0; k < sol.psi.length; k++) psiMax = Math.max(psiMax, Math.abs(sol.psi[k]));
     for (let j = 0; j < nz; j++) for (let i = 0; i < nr; i++) {
@@ -563,13 +684,37 @@ function ferraSolverModule(root) {
         psiCoil += 0.25 * (sol.psi[k] + sol.psi[k + 1] + sol.psi[k + NR] + sol.psi[k + NR + 1]) * a; coilA += a;
       }
       const gid = gapCell[c], bi = G.cellBody[c];
+      const bn = bc ? bc[c] : 0;
       if (gid > 0) gapsW[gid] += w;
-      else if (bi >= 0) {
+      else if (bn > 0 && brs[bn - 1].ignore) {
+        const o = brO[bn - 1];
+        o.W += w; o.V += dV; o.BV += B * dV;
+        if (B > o.max) o.max = B;
+        if (B > kneeOfBody(bi)) o.sat += dV;
+      } else if (bi >= 0) {
         const o = bodies[bi];
         o.W += w; o.V += dV; o.BV += B * dV; o.pairs.push([B, dV]);
-        if (B > kneeOfBody(bi)) { o.sat += dV; o.hr += rcm * dV; o.hz += zcm * dV; }
+        if (B > kneeOfBody(bi)) { o.sat += dV; satCell[c] = 1; }
         if (B > o.max) o.max = B;
       } else airW += w;
+    }
+    // hot spot: centroid of the largest connected saturated region of each body (a centroid over all saturated
+    // cells falls between regions, e.g. on the notch between two saturated halves of a ring)
+    const seen = new Uint8Array(nr * nz);
+    for (let c0 = 0; c0 < nr * nz; c0++) {
+      if (!satCell[c0] || seen[c0]) continue;
+      const bi = G.cellBody[c0], st = [c0];
+      let V = 0, hr = 0, hz = 0;
+      seen[c0] = 1;
+      while (st.length) {
+        const c = st.pop(), i = c % nr, j = (c / nr) | 0;
+        const rcm = 0.5 * (S.r[i] + S.r[i + 1]), dV = TWO_PI * rcm * S.dr[i] * S.dz[j];
+        V += dV; hr += rcm * dV; hz += 0.5 * (S.z[j] + S.z[j + 1]) * dV;
+        const nb = [i > 0 ? c - 1 : -1, i < nr - 1 ? c + 1 : -1, j > 0 ? c - nr : -1, j < nz - 1 ? c + nr : -1];
+        for (const n of nb) if (n >= 0 && satCell[n] && !seen[n] && G.cellBody[n] === bi) { seen[n] = 1; st.push(n); }
+      }
+      const o = bodies[bi];
+      if (V > o.hotV) { o.hotV = V; o.hr = hr / V; o.hz = hz / V; }
     }
     const phiLink = coilA > 0 ? TWO_PI * psiCoil / coilA : 0;
     const NI = sol.NI || 1;
@@ -580,10 +725,12 @@ function ferraSolverModule(root) {
         return {
           id: bi, Bmean: o.V ? o.BV / o.V : 0, Bp50: percentile(o.pairs, o.V, 0.5), Bp98: percentile(o.pairs, o.V, 0.98),
           Bmax: o.max, satFrac: o.V ? o.sat / o.V : 0, mmf: mmf(o.W), mmfPct: 100 * mmf(o.W) / NI,
-          hot: o.sat > 0 ? [o.hr / o.sat * 1e3, o.hz / o.sat * 1e3] : null
+          hot: o.hotV > 0 ? [o.hr * 1e3, o.hz * 1e3] : null
         };
       }),
       gaps: prob.gaps.map((g, n) => ({ id: g.id, mmf: mmf(gapsW[n + 1]), mmfPct: 100 * mmf(gapsW[n + 1]) / NI })),
+      bridges: brO.map((o, n) => ({ id: n, ignored: brs[n].ignore, Bmean: o.V ? o.BV / o.V : null, Bmax: brs[n].ignore ? o.max : null,
+        satFrac: o.V ? o.sat / o.V : null, mmfPct: brs[n].ignore ? 100 * mmf(o.W) / NI : null })),
       airMMFpct: 100 * mmf(airW) / NI,
       phiTotal: TWO_PI * psiMax, phiLink,
       energyCheck: phiLink > 0 ? totW / (NI * phiLink) : 0
@@ -644,8 +791,11 @@ function ferraSolverModule(root) {
     const knees = mats.tables.map(kneeOf);
     const steelMat = cfg.cls.map((k, b) => (cfg.steelMat ? cfg.steelMat[b] || 0 : 0));
     const bodyKnee = cfg.cls.map((k, b) => (k === 'steel' ? knees[steelMat[b]] : null));
+    const bridges = detectBridges(G, cfg.cls, cfg);
+    const bridgeCell = new Int32Array(nc); // 1-based bridge index
+    bridges.forEach((br, n) => { for (const c of br.cells) bridgeCell[c] = n + 1; });
     return { G, S, gaps, cellMat, coilMask, gapCell, coilAreaM2, coilRmean: coilAreaM2 ? rA / coilAreaM2 : 0, coilBox, mats,
-      steelDefs, steelMat, knees, bodyKnee };
+      steelDefs, steelMat, knees, bodyKnee, bridges, bridgeCell };
   }
 
   /**
@@ -774,7 +924,7 @@ function ferraSolverModule(root) {
       fill: win.areaMM2 > 0 ? N * Abare / win.areaMM2 : 0 };
   }
 
-  const api = { MU0, STEEL_BH, STEEL_KNEE_REF, steelTable, kneeOf, isSteelCode, makeMaterials, nuOf, buildGrid, detectGaps, buildProblem, solveNI, gapFieldStats,
+  const api = { MU0, STEEL_BH, STEEL_KNEE_REF, steelTable, kneeOf, isSteelCode, makeMaterials, nuOf, buildGrid, detectGaps, detectBridges, buildProblem, solveNI, gapFieldStats,
     torqueFromStats, analyse, floodEmpty, coilFromPicks, coilElectrical, SWG, AWG, METRIC, WIRES, wireList, wireDia, nearestWire, windTurns, coilWindow,
     fluxPerTurn, insulated, tau, M_AIR, M_STEEL, M_POWDER, M_STEEL_P, M_STEEL_BASE };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.FerraSolver = api;

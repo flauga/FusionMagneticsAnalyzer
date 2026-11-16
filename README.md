@@ -24,6 +24,12 @@ Fusion keeps the Python loaded at start-up, while the palette HTML/JS is re-read
    errors (e.g. an O-ring "Separator" left as Steel) must be fixed here. Bearings/fasteners default to Ignore.
 3. **Coil.** Mark the coil body as Coil, or click *Pick coil window* and click inside the empty
    winding space. *Coil starts at radius* trims the window (e.g. zip-tie space under a bobbinless coil).
+   **Saturation bridges** (under the body table): a notch that leaves a thin steel web holding two halves of a ring
+   together saturates by design. Necks up to *Saturation bridges: thin necks up to* (Model settings, default 1.5 mm,
+   0 = off) whose removal splits the body in two are found automatically; *Mark a bridge* picks one by clicking it in
+   the section. Ignored bridges (hatched blue) stay in the field solve but are left out of the body's saturation stats,
+   the steel levers and the "add cross-section here" marker. Each bridge shows its own +10 % steel → torque: negative
+   means it shunts flux past the gap; positive means it carries working flux and you are warned to untick *Ignore*.
 4. **Working gaps tab.** Gaps = empty space between rotor steel and stator steel (≤ 3 mm).
    Per gap: *Powder* (magnetic fill vs air) and *Torque* (counts toward torque; default on ≤ 1.5 mm).
 5. **Balance verdict** (top right). The headline answer: *Well balanced* (steel and ampere-turns limit torque about
@@ -98,7 +104,8 @@ Fusion keeps the Python loaded at start-up, while the palette HTML/JS is re-read
 | Saturation per part | Volume-weighted B50/B98, % volume above the knee of the body's grade (B where differential μr < 50; 1.63 T for 1010). |
 | Probes | Cell field at points; along lines, |B|, normal/tangential B, and flux 2π·Δψ through the swept surface. |
 | Thermal | Lumped: T = T_amb + duty·P(T)·(1/(h·A) + R_coil-case), R(T) iterated; runaway flagged above 1000 °C. τ = heat capacity × thermal resistance; heat capacity from body volumes (steel, aluminium, stainless, brass, plastic by CAD name; coil = copper/resin at the packing factor). |
-| Bottleneck | MMF budget: ∫H·B dV over a part ÷ coil flux linkage = ampere-turns that part consumes. Exact identity (Σ parts = NI; "Energy check" ≈ 1.000). The steel part with the largest share is flagged and its saturated centroid circled. |
+| Bottleneck | MMF budget: ∫H·B dV over a part ÷ coil flux linkage = ampere-turns that part consumes. Exact identity (Σ parts = NI; "Energy check" ≈ 1.000). The steel part with the largest share is flagged and the centroid of its largest connected saturated region circled. |
+| Saturation bridges | Local thickness = shorter of the r and z runs of the body through each cell; connected cells at or under the threshold are a bridge when removing them leaves ≥ 2 pieces of the body each ≥ 4× the neck's section area. Ignored bridges: own MMF bucket (identity still exact), excluded from B98 / saturated % / hot spot, held at their base B-H in the all-steel and per-body sensitivity solves; their own +5 % solve is reported. |
 | Limit breakdown | Sensitivity solves around the operating point (+5 % each, warm-started): ampere-turns, all steel's flux capacity, and each steel body that spends ≥ 0.3 % of the MMF. Steel share = steel gain ÷ (steel + ampere-turn gain): > 60 % steel-limited, < 40 % ampere-turn limited, else balanced; powder-shear limited when both gains are small and the shear curve is flat. The body with the largest gain is circled. |
 | Electrical regime | Voltage- or current-limited, with the NI / power / torque change for +10 % V, +10 % current limit, +0.05 packing, one gauge thicker and +20 °C. At fixed voltage NI = V·A_wire/(ρ·MLT): turns and packing do not change NI. |
 | Knee | Marked on T(NI) where d lnT / d lnNI falls below 0.5. |
@@ -121,6 +128,8 @@ Validation (tools/): energy identity 1.000; mesh 1.5 → 0.35 mm changes torque 
   coil-to-case resistance to account for that once measured.
 - Powder τ(B) defaults (60 kPa, Bs 0.6 T) are uncalibrated; absolute torque is only as good as the calibration. Ratios between design variants are robust.
 - Curved faces are rasterised (staircase) at the mesh size; refine *Mesh size* for chamfer-heavy gaps.
+- Bridge detection measures thickness along r and z only: a web running diagonally in the section reads thicker than it
+  is. Use *Mark a bridge* for those. A bridge made of a separate thin body is found only by *Mark a bridge*.
 
 ## Files
 - `FerraBrakeAnalyzer.py` — Fusion side: axis detection, section via `TemporaryBRepManager.planeIntersection`, palette I/O, body selection.
@@ -132,5 +141,5 @@ Validation (tools/): energy identity 1.000; mesh 1.5 → 0.35 mm changes torque 
 - `palette/study.js` — parameter studies: setup carry-over, objectives/limits, steel mass, full-factorial design maps, force/steel-mass frontier, 1-D grid + golden section, 2-D grid + quadratic surrogate + Nelder–Mead (no DOM).
 - `palette/ui.js`, `palette/index.html` — UI.
 - `tools/fusion_section_check.js` — runs the palette pipeline in Node on section JSON exported from Fusion (default setup, largest enclosed space as coil).
-- `tools/*.js` — Node validation scripts (`node tools/validate_solver.js`, `node tools/test_phase0.js`, `node tools/test_study.js`, `node tools/test_phase1.js`, `node tools/test_phase4.js`).
+- `tools/*.js` — Node validation scripts (`node tools/validate_solver.js`, `node tools/test_phase0.js`, `node tools/test_study.js`, `node tools/test_phase1.js`, `node tools/test_phase4.js`, `node tools/test_bridges.js`).
 - `PLAN.md` — roadmap (parameter sweep / optimisation, materials, thermal).

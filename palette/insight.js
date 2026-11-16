@@ -59,14 +59,17 @@ function ferraInsightModule(root) {
   }
 
   /**
-   * sens: {eps, ni: stats|null, all: stats|null, bodies: {id: stats}} from the engine's 'sens' solves.
+   * sens: {eps, ni: stats|null, all: stats|null, bodies: {id: stats}, bridges: {n: stats}} from the engine's 'sens' solves.
    * torqueOf: stats -> total torque. Returns d lnT / d ln(x) for each perturbation.
    */
   function elasticities(sens, T0, torqueOf) {
     const el = st => (st && T0 > 0 ? (torqueOf(st) / T0 - 1) / sens.eps : null);
     const bodies = Object.keys(sens.bodies || {}).map(id => ({ id: +id, e: el(sens.bodies[id]) })).filter(b => b.e != null);
     bodies.sort((a, b) => b.e - a.e);
-    return { eNI: el(sens.ni), eSteel: el(sens.all), bodies };
+    // saturation bridges: < 0 = a shunt (more steel there leaks more flux past the gap)
+    const bridges = {};
+    Object.keys(sens.bridges || {}).forEach(id => { const e = el(sens.bridges[id]); if (e != null) bridges[id] = e; });
+    return { eNI: el(sens.ni), eSteel: el(sens.all), bodies, bridges };
   }
 
   /**

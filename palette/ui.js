@@ -12,13 +12,14 @@
     rForce: 30, ratio: 1,
     powderMur: 5, powderJs: 0.8, tauSat: 60, Bs: 0.6,
     hmax: 0.75, gmaxDetect: 3, torqueGapMax: 1.5, coilRmin: 0,
+    bridgeMax: 1.5, bridgePicks: [], bridgeOff: [], // saturation bridges: auto threshold (mm), manual picks, auto ones kept
     Tamb: 25, hConv: 12, duty: 100, RthCoil: 0, Tmax: 130, coolAreaCm2: 0, thermalOp: 0,
     gradeScale: {} // steel grade id -> scale on the library curve
   };
   const S = {
     geo: null, meta: [], G: null, prob: null, coilPicks: [], coilExtra: null,
     sweep: null, op: null, opStats: null, opAn: null, opT: null, sens: null, el: null, neck: -1,
-    token: 0, opTok: 0, stale: false, selected: -1, pickMode: false, view: null,
+    token: 0, opTok: 0, stale: false, selected: -1, pickMode: false, bridgePickMode: false, view: null,
     customGrades: [], mat: null, probes: [], probeMode: null, probeA: null, probeSel: -1,
     resp: null, sum: null, snaps: [], calText: '', calFit: null,
     compute: window.ferraCompute(window.FerraSolver)
@@ -63,7 +64,7 @@
   //   grid -> detect (gaps) -> problem -> T(NI) sweep -> electrical -> operating point -> sensitivities -> render
   const STAGE_OF = {
     hmax: 'grid', gmaxDetect: 'detect', torqueGapMax: 'detect',
-    powderMur: 'problem', powderJs: 'problem', coilRmin: 'problem',
+    powderMur: 'problem', powderJs: 'problem', coilRmin: 'problem', bridgeMax: 'problem',
     Tamb: 'elec', hConv: 'elec', duty: 'elec', RthCoil: 'elec', Tmax: 'elec', coolAreaCm2: 'elec', thermalOp: 'elec',
     tauSat: 'torque', Bs: 'torque',
     V: 'elec', swg: 'elec', pack: 'elec', Ilim: 'elec', tempC: 'elec', turnsOverride: 'elec', Pmax: 'elec', Jmax: 'elec',
@@ -107,6 +108,11 @@
       // files from before steel grades: a global "steel saturation knee" scaled the 1010 curve
       if (geo.params.steelKnee && Math.abs(geo.params.steelKnee - F.STEEL_KNEE_REF) > 1e-9 && !P.gradeScale['1010']) P.gradeScale['1010'] = geo.params.steelKnee / F.STEEL_KNEE_REF;
       delete P.steelKnee;
+    }
+    if (!prev) { // bridge picks / overrides belong to one design
+      P.bridgePicks = (geo.params && geo.params.bridgePicks) || [];
+      P.bridgeOff = (geo.params && geo.params.bridgeOff) || [];
+      if (geo.params && geo.params.bridgeMax == null) P.bridgeMax = 1.5;
     }
     if (geo.materials && geo.materials.custom) S.customGrades = geo.materials.custom;
     if (geo.calibration != null) S.calText = geo.calibration;
@@ -330,13 +336,14 @@
     if (!live()) return;
     S.op = r; S.opStats = r.stats; S.stale = false;
     S.opAn = F.analyse(S.prob, r, S.meta.length);
-    S.sens = { NI, eps: SENS_EPS, ni: null, all: null, bodies: {}, pending: true };
+    S.sens = { NI, eps: SENS_EPS, ni: null, all: null, bodies: {}, bridges: {}, pending: true };
     renderResults(); renderTables(); draw();
     drawCurve(NI, S.opT ? S.opT.total : torqueAt(NI));
     // Steel bodies that spend under 0.3 % of the ampere-turns cannot change torque measurably.
     const steel = S.opAn.bodies.filter(b => S.meta[b.id].cls === 'steel' && b.mmfPct >= 0.3)
       .sort((a, b) => b.mmfPct - a.mmfPct).slice(0, 8);
-    const jobs = [{ kind: 'ni' }, { kind: 'all' }].concat(steel.map(b => ({ kind: 'body', body: b.id })));
+    const jobs = [{ kind: 'ni' }, { kind: 'all' }].concat(steel.map(b => ({ kind: 'body', body: b.id })),
+      S.prob.bridges.slice(0, 4).map((b, n) => ({ kind: 'bridge', bridge: n })));
     for (let n = 0; n < jobs.length; n++) {
       status(`Sensitivity ${n + 1}/${jobs.length}`, 'busy');
       let q;
@@ -344,6 +351,7 @@
       catch (e) { if (live()) fail(e); return; }
       if (!live()) return;
       if (q.kind === 'body') { if (q.stats) S.sens.bodies[q.body] = q.stats; }
+      else if (q.kind === 'bridge') { if (q.stats) S.sens.bridges[q.bridge] = q.stats; }
       else S.sens[q.kind] = q.stats;
       renderResults(); renderBodies();
     }
@@ -377,7 +385,7 @@
     if (!S.stale) showTorque(T.total);
     const eSh = FI.shearElasticity(prob, st, tp());
     const torqueOf = s => F.torqueFromStats(prob, s, tp()).total;
-    const el = S.sens ? FI.elasticities(S.sens, T.total, torqueOf) : { eNI: null, eSteel: null, bodies: [] };
+    const el = S.sens ? FI.elasticities(S.sens, T.total, torqueOf) : { eNI: null, eSteel: null, bodies: [], bridges: {} };
     S.el = el;
     const eNI = el.eNI != null ? el.eNI : elasticity(S.op.NI);
     const lb = FI.limitBreakdown({ eNI: el.eNI, eSteel: el.eSteel, bodies: el.bodies, eShear: eSh, util });
@@ -407,7 +415,7 @@
       powder: 'Powder-shear limited', flat: 'Torque barely responds', pending: 'Working out what limits torque…' };
     S.sum = { util, Bg, gapMMF, kind: lb.kind, label: LABEL[lb.kind] };
     lines.push(`<p class="head"><strong>${LABEL[lb.kind]}</strong></p>`);
-    renderBalanceCard(lb, { name, at, raiseNI, tauFrac, util });
+    renderBalanceCard(lb, { name, at, raiseNI, tauFrac, util, nBridge: prob.bridges.filter(b => b.ignore).length });
     if (lb.kind === 'steel') lines.push(`<p>More flux capacity in the steel buys ${fmt(lb.steelShare / Math.max(1e-6, 1 - lb.steelShare), 1)}× more torque than the same percentage more ampere-turns.${lb.neck ? ` Biggest lever: <strong>${name(lb.neck.id)}</strong>${at(lb.neck.id)}. Add cross-section there before adding turns or current.` : ''}</p>`);
     else if (lb.kind === 'ampere') lines.push(`<p>The steel has headroom and torque follows NI. To get more NI, ${raiseNI}.</p>`);
     else if (lb.kind === 'balanced') lines.push(`<p>Neither lever dominates.${lb.neck ? ` The steel lever is mainly <strong>${name(lb.neck.id)}</strong>${at(lb.neck.id)}.` : ''}</p>`);
@@ -423,6 +431,13 @@
       rows.map(([k, x, est]) => `<tr><td class="l">${k}${est ? ' <span class="note">(curve)</span>' : ''}</td><td>${pc(x)} %</td></tr>`).join('')}</tbody></table>`);
     if (S.sens && S.sens.pending) lines.push('<p class="note">Running sensitivity solves…</p>');
 
+    prob.bridges.forEach((b, n) => {
+      const e = el.bridges[n], ab = an.bridges[n], where = `${name(b.body)} at r ${fmt(b.r, 1)}, z ${fmt(b.z, 1)} mm (${fmt(b.thickness, 2)} mm thick)`;
+      const lever = e != null ? ` +10 % steel there: ${pc(10 * e)} % torque${e < 0 ? ', so it shunts flux past the gap' : ''}.` : '';
+      if (!b.ignore) { lines.push(`<p class="note">Thin neck in ${where} is counted as ordinary steel.${lever}</p>`); return; }
+      lines.push(`<p class="note">Saturation bridge in ${where} is left out of the steel verdict${ab && ab.Bmax != null ? ` (max ${fmt(ab.Bmax, 2)} T, ${fmt(ab.mmfPct, 1)} % of the MMF)` : ''}.${lever}</p>`);
+      if (e != null && e > 0.02) lines.push(`<p class="warn">That bridge carries working flux: thickening it would add torque. If it is not a deliberate flux restriction, untick Ignore under Saturation bridges in the Bodies tab.</p>`);
+    });
     if (lb.bypass) lines.push(`<p><strong>Flux bypass.</strong> Only ${fmt(100 * util, 0)} % of the coil flux crosses the torque gap. Follow the flux lines to the steel or non-working gap that short-circuits it; a non-magnetic separator there is usually the largest single gain.</p>`);
     if (mmfTop && lb.neck && mmfTop.id !== lb.neck.id && mmfTop.mmfPct > 10) {
       const e = el.bodies.find(b => b.id === mmfTop.id);
@@ -467,8 +482,9 @@
     else if (th && th.overMax) chips.push(`coil ${fmt(th.Tss, 0)} °C > ${P.Tmax} °C`);
     if (lb.bypass) chips.push(`flux bypass: ${fmt(100 * x.util, 0)} % reaches the gap`);
     card.className = `bal-card ${tone}` + (S.stale ? ' stale' : '');
+    const info = x.nBridge ? `<span class="chip infoc" title="Thin necks that saturate by design are left out of the steel verdict (Bodies tab)">${x.nBridge} saturation bridge${x.nBridge > 1 ? 's' : ''} ignored</span>` : '';
     card.innerHTML = `<p class="bal-k">Balance</p><p class="bal-h">${head}</p>${bar}<p>${body}</p>
-      <div class="chips">${chips.length ? chips.map(c => `<span class="chip">${esc(c)}</span>`).join('') : (lb.kind === 'pending' ? '' : '<span class="chip okc">within power, density and thermal limits</span>')}</div>`;
+      <div class="chips">${chips.length ? chips.map(c => `<span class="chip">${esc(c)}</span>`).join('') : (lb.kind === 'pending' ? '' : '<span class="chip okc">within power, density and thermal limits</span>')}${info}</div>`;
   }
 
   /** Steel and total mass of the loaded design (CAD body masses when available, else the revolved section). */
@@ -504,7 +520,28 @@
         <td class="${i === S.neck ? 'hot' : ''}">${eb ? pc(10 * eb.e) + ' %' : '–'}</td></tr>`;
     }).join('');
     $('tab-bodies').innerHTML = `<table><thead><tr><th>Body</th><th class="l">CAD material</th><th class="l">Treat as</th><th class="l">Moves with</th><th class="l">Steel grade</th>
-      <th title="98th percentile of |B| over the body volume">B98, T</th><th title="Volume above the knee of the body's grade">Saturated, %</th><th title="Share of coil ampere-turns consumed (energy-weighted)">MMF, %</th><th title="Torque change if this body's steel carried 10 % more flux at every H (about 10 % more cross-section where it saturates)">+10 % steel → T</th></tr></thead><tbody>${rows}</tbody></table>`;
+      <th title="98th percentile of |B| over the body volume">B98, T</th><th title="Volume above the knee of the body's grade">Saturated, %</th><th title="Share of coil ampere-turns consumed (energy-weighted)">MMF, %</th><th title="Torque change if this body's steel carried 10 % more flux at every H (about 10 % more cross-section where it saturates)">+10 % steel → T</th></tr></thead><tbody>${rows}</tbody></table>${bridgesHTML()}`;
+  }
+
+  // Saturation bridges: thin necks (e.g. the web a notch leaves across a ring) that saturate by design.
+  function bridgesHTML() {
+    if (!S.prob) return '';
+    const brs = S.prob.bridges, an = S.opAn;
+    const rows = brs.map((b, n) => {
+      const a = an && an.bridges ? an.bridges[n] : null, e = S.el && S.el.bridges ? S.el.bridges[n] : null;
+      return `<tr><td>${esc(S.meta[b.body].name)}${b.auto ? '' : ' <span class="note">(picked)</span>'}</td><td>${fmt(b.r, 1)}</td><td>${fmt(b.z, 1)}</td>
+        <td>${fmt(b.thickness, 2)}</td><td>${fmt(b.areaMM2, 1)}</td>
+        <td>${a && a.Bmax != null ? fmt(a.Bmax, 2) : '–'}</td><td>${a && a.mmfPct != null ? fmt(a.mmfPct, 1) : '–'}</td>
+        <td class="${e != null && e > 0.02 ? 'hot' : ''}">${e != null ? pc(10 * e) + ' %' : '–'}</td>
+        <td><input type="checkbox" data-br="${n}"${b.ignore ? ' checked' : ''}></td></tr>`;
+    }).join('');
+    const table = brs.length ? `<table><thead><tr><th>Body</th><th>r, mm</th><th>z, mm</th><th>Thickness, mm</th><th title="Section area of the neck">Area, mm²</th>
+      <th>B max, T</th><th title="Ampere-turns the bridge consumes (when ignored)">MMF, %</th><th title="Torque change if the bridge's steel carried 10 % more flux. Negative = it shunts flux past the gap.">+10 % steel → T</th>
+      <th title="Leave the bridge out of the saturation stats, the steel levers and the bottleneck marker">Ignore</th></tr></thead><tbody>${rows}</tbody></table>`
+      : `<p class="note">None found${P.bridgeMax > 0 ? ` (necks up to ${P.bridgeMax} mm that hold two parts of a steel body together)` : ' (auto detection is off in Model settings)'}.</p>`;
+    return `<div class="bridges"><h3>Saturation bridges</h3>${table}
+      <div class="row"><button id="btnPickBridge" class="${S.bridgePickMode ? 'on' : ''}">Mark a bridge</button>${P.bridgePicks.length ? '<button id="btnClearBridges">Clear marked</button>' : ''}
+      <span class="note">A notch that leaves a thin web across a ring saturates by design. Ignored bridges stay in the field solve but are left out of the steel verdict, so the analyzer does not ask you to thicken them.</span></div></div>`;
   }
 
   function renderGaps() {
@@ -568,7 +605,8 @@
     ['Voff', 'Turn-off clamp voltage (0.7 = diode)', 'V', 0.5], ['rpm', 'Speed for the stopping time', 'rpm', 50],
     ['Mesh'],
     ['hmax', 'Mesh size', 'mm', 0.05],
-    ['gmaxDetect', 'Detect gaps up to', 'mm', 0.1], ['torqueGapMax', 'Count torque for gaps up to', 'mm', 0.1]
+    ['gmaxDetect', 'Detect gaps up to', 'mm', 0.1], ['torqueGapMax', 'Count torque for gaps up to', 'mm', 0.1],
+    ['bridgeMax', 'Saturation bridges: thin necks up to (0 = off)', 'mm', 0.1]
   ];
 
   function renderSettings() {
@@ -624,6 +662,14 @@
       if (S.meta.some(m => m.cls === 'steel' && m.grade === t.dataset.gs)) invalidate('problem');
       return;
     }
+    if (t.dataset.br != null) {
+      const b = S.prob.bridges[+t.dataset.br], near = ([r, z]) => Math.hypot(r - b.r, z - b.z) < 1.5;
+      if (!b.auto) { if (!t.checked) P.bridgePicks = P.bridgePicks.filter(p => !near(p) && !bridgeHas(b, p)); }
+      else if (t.checked) P.bridgeOff = P.bridgeOff.filter(p => !near(p));
+      else P.bridgeOff = P.bridgeOff.concat([[b.r, b.z]]);
+      invalidate('problem');
+      return;
+    }
     if (t.dataset.g != null) {
       const g = S.prob.gaps[+t.dataset.g];
       g[t.dataset.k] = t.checked;
@@ -662,7 +708,20 @@
     }
   }));
 
+  /** Does bridge b contain the point p = [r, z] (mm)? */
+  function bridgeHas(b, p) {
+    const i = locate(S.G.rs, p[0]), j = locate(S.G.zs, p[1]);
+    return i >= 0 && j >= 0 && b.cells.indexOf(j * S.G.nr + i) >= 0;
+  }
+
   $('tab-bodies').addEventListener('click', ev => {
+    if (ev.target.id === 'btnPickBridge') {
+      S.bridgePickMode = !S.bridgePickMode;
+      ev.target.classList.toggle('on', S.bridgePickMode);
+      status(S.bridgePickMode ? 'Click the thin steel neck (bridge) on the section' : 'Ready');
+      return;
+    }
+    if (ev.target.id === 'btnClearBridges') { P.bridgePicks = []; invalidate('problem'); return; }
     const tr = ev.target.closest('tr[data-i]');
     if (!tr || ev.target.tagName === 'SELECT') return;
     selectBody(+tr.dataset.i);
@@ -814,6 +873,7 @@
       }
       ctx.stroke();
     });
+    if (prob && prob.bridges.length) drawBridges(prob);
     if (S.probes.length || S.probeA) drawProbes(X, Y);
     // saturation hot-spot marker on the bottleneck
     if (S.opAn && S.neck >= 0) {
@@ -826,6 +886,34 @@
     ctx.fillStyle = '#8ea3b6'; ctx.font = '11px sans-serif';
     ctx.fillText('axis', 6, Y(0) - 4);
     drawLegend(mode, !!sol);
+  }
+
+  // Saturation bridges: hatched cells and a dashed outline; ignored ones in steel blue, counted ones in orange.
+  function drawBridges(prob) {
+    const G = S.G, nr = G.nr;
+    prob.bridges.forEach(b => {
+      const col = b.ignore ? '#7cc4ff' : '#e7a46b';
+      let r0 = Infinity, r1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      ctx.save();
+      ctx.beginPath();
+      for (const c of b.cells) {
+        const i = c % nr, j = (c / nr) | 0;
+        ctx.rect(X(G.zs[j]), Y(G.rs[i + 1]), X(G.zs[j + 1]) - X(G.zs[j]) + 0.5, Y(G.rs[i]) - Y(G.rs[i + 1]) + 0.5);
+        r0 = Math.min(r0, G.rs[i]); r1 = Math.max(r1, G.rs[i + 1]); z0 = Math.min(z0, G.zs[j]); z1 = Math.max(z1, G.zs[j + 1]);
+      }
+      ctx.clip();
+      ctx.strokeStyle = col; ctx.globalAlpha = 0.8; ctx.lineWidth = 1;
+      const x0 = X(z0), x1 = X(z1), y0 = Y(r1), y1 = Y(r0);
+      ctx.beginPath();
+      for (let s = x0 - (y1 - y0); s < x1; s += 4) { ctx.moveTo(s, y1); ctx.lineTo(s + (y1 - y0), y0); }
+      ctx.stroke();
+      ctx.restore();
+      ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.setLineDash([3, 2]);
+      ctx.strokeRect(x0 - 3, y0 - 3, x1 - x0 + 6, y1 - y0 + 6);
+      ctx.setLineDash([]);
+      ctx.fillStyle = col; ctx.font = '10.5px sans-serif';
+      ctx.fillText(b.ignore ? 'bridge (ignored)' : 'neck', x1 + 6, y0 + 8);
+    });
   }
 
   function drawLegend(mode, hasSol) {
@@ -905,6 +993,7 @@
     let txt = `r ${fmt(w.r, 2)} mm  z ${fmt(w.z, 2)} mm\n${b >= 0 ? S.meta[b].name : (S.prob && S.prob.coilMask[c] ? 'Coil window' : 'Air')}`;
     if (b >= 0 && S.meta[b].cls === 'steel') txt += `  ·  ${gradeName(S.meta[b].grade).split(' (')[0]}`;
     if (S.prob && S.prob.gapCell[c]) txt += `  (gap ${S.prob.gaps[S.prob.gapCell[c] - 1].id})`;
+    if (S.prob && S.prob.bridgeCell[c]) txt += S.prob.bridges[S.prob.bridgeCell[c] - 1].ignore ? '  (saturation bridge, ignored)' : '  (thin neck, counted)';
     if (S.op) {
       const B = S.op.Bm[c], H = B > 0 ? S.op.HB[c] / B : 0;
       txt += `\n|B| ${fmt(B, 3)} T   Br ${fmt(S.op.Br[c], 3)}  Bz ${fmt(S.op.Bz[c], 3)}`;
@@ -924,6 +1013,15 @@
       ST.pickProbe = false;
       if ($('stR')) { $('stR').value = +w.r.toFixed(2); $('stZ').value = +w.z.toFixed(2); $('stPick').classList.remove('on'); }
       status(`Probe point r ${fmt(w.r, 2)} mm, z ${fmt(w.z, 2)} mm`);
+      return;
+    }
+    if (S.bridgePickMode) {
+      const b = S.G.cellBody[c];
+      if (b < 0 || S.meta[b].cls !== 'steel') { status('Click on the thin steel neck itself (a body treated as Magnetic steel).', 'err'); return; }
+      S.bridgePickMode = false;
+      if (S.prob.bridgeCell[c]) { status('That neck is already listed under Saturation bridges.'); renderBodies(); return; }
+      P.bridgePicks = P.bridgePicks.concat([[w.r, w.z]]);
+      invalidate('problem');
       return;
     }
     if (S.pickMode) {
