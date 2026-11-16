@@ -7,6 +7,7 @@ const demo = require('../palette/demo.js');
 const FM = require('../palette/materials.js');
 
 let fails = 0;
+const near = (a, b, tol) => Math.abs(a / b - 1) < tol;
 function check(name, ok, info) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${info ? '  (' + info + ')' : ''}`);
   if (!ok) fails++;
@@ -109,6 +110,35 @@ const ctx = { F, FI, FM, P, mat: FM.makeDefs({}, []), compute: { call: async (cm
   }, () => false);
   check('2-D demo study (lip_t x ring_t) returns a feasible best', out2.best && isFinite(out2.best.s),
     `best lip_t ${out2.best.v[0].toFixed(2)}, ring_t ${out2.best.v[1].toFixed(2)} mm, T ${out2.best.s.toFixed(3)} N·m in ${res2.length} runs`);
+
+  // --- design map (full-factorial multi-variable sweep): force and steel mass
+  const fac = Study.factorial([[1, 2, 3], [10, 20]]);
+  check('factorial covers every combination, first axis fastest', fac.length === 6 && fac[0].join() === '1,10' && fac[1].join() === '2,10' && fac[5].join() === '3,20');
+  check('factorial of three axes', Study.factorial([[1, 2], [3, 4], [5, 6, 7]]).length === 12);
+  const pf = Study.pareto([{ x: 1, y: 5 }, { x: 2, y: 4 }, { x: 2, y: 8 }, { x: 3, y: 7 }, { x: 4, y: 9 }]);
+  check('pareto keeps the lightest point for each force level', pf.map(q => q.x + ':' + q.y).join(' ') === '1:5 2:8 4:9', pf.map(q => q.x + ':' + q.y).join(' '));
+  const Gm = F.buildGrid(base.bodies, { hmax: 0.75 }), clsM = base.bodies.map(b => baseBodies.get(Study.bodyKey(b)).cls);
+  const smCad = Study.steelMass(Gm, base.bodies, clsM);
+  const smSec = Study.steelMass(Gm, base.bodies.map(b => Object.assign({}, b, { massKg: undefined })), clsM);
+  check('steel mass from CAD body masses and from the section agree', smCad.source === 'cad' && smSec.source === 'section' && near(smSec.kg, smCad.kg, 0.03),
+    `CAD ${smCad.kg.toFixed(3)} kg, section ${smSec.kg.toFixed(3)} kg`);
+  check('default demo parameters reproduce the base geometry', JSON.stringify(demo.cad.build({ outer_d: 110, length: 40 }).geometry.bodies) === JSON.stringify(base.bodies));
+  const ctxF = Object.assign({}, ctx, { P: Object.assign({}, P, { rForce: 30, ratio: 1 }), point: null });
+  const map = [];
+  for (const v of Study.factorial([[100, 120], [36, 50]])) {
+    const bd = demo.cad.build({ outer_d: v[0], length: v[1] });
+    const r = bd.feasible ? await Study.evaluateGeometry(ctxF, bd.geometry, bd.massKg) : { status: 'cad' };
+    map.push({ v, r });
+  }
+  const okM = map.every(o => o.r.status === 'ok' && o.r.metrics.Fkgf > 0 && o.r.metrics.steelMassKg > 0);
+  check('demo design map (outer_d x length) solves every combination', okM,
+    map.map(o => `${o.v.join('x')}: ${o.r.metrics ? o.r.metrics.Fkgf.toFixed(1) + ' kgf / ' + o.r.metrics.steelMassKg.toFixed(2) + ' kg' : o.r.status}`).join('; '));
+  if (okM) {
+    const m = (d, l) => map.find(o => o.v[0] === d && o.v[1] === l).r.metrics;
+    check('force is torque at the force radius', near(m(100, 36).Fkgf, m(100, 36).T / 0.03 / 9.80665, 1e-9));
+    check('a larger, longer brake carries more steel', m(120, 50).steelMassKg > m(100, 36).steelMassKg && m(120, 36).steelMassKg > m(100, 36).steelMassKg);
+    check('a longer drum gives more force', m(100, 50).Fkgf > m(100, 36).Fkgf, `${m(100, 50).Fkgf.toFixed(1)} > ${m(100, 36).Fkgf.toFixed(1)} kgf`);
+  }
 
   console.log(fails ? `\n${fails} FAILED` : '\nall passed');
   process.exit(fails ? 1 : 0);

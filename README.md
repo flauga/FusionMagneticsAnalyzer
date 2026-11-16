@@ -26,23 +26,30 @@ Fusion keeps the Python loaded at start-up, while the palette HTML/JS is re-read
    winding space. *Coil starts at radius* trims the window (e.g. zip-tie space under a bobbinless coil).
 4. **Working gaps tab.** Gaps = empty space between rotor steel and stator steel (≤ 3 mm).
    Per gap: *Powder* (magnetic fill vs air) and *Torque* (counts toward torque; default on ≤ 1.5 mm).
-5. Move the **voltage** and **gauge** sliders. Torque/force update instantly from a pre-solved
+5. **Balance verdict** (top right). The headline answer: *Well balanced* (steel and ampere-turns limit torque about
+   equally), *Not balanced: steel-limited* (with the part to thicken), *Not balanced: ampere-turn limited* (steel has
+   headroom: trim it or add NI), *Powder-shear limited*, or *Torque does not respond*. The bar shows the steel vs
+   ampere-turn share of the marginal torque gain; chips flag power, current-density, thermal and flux-bypass problems.
+   Torque, force and steel mass sit under it. Everything else is folded away: *Why: lever breakdown*, *Field details*
+   and *Torque vs ampere-turns* on the right; *More coil details*, *What moves the ampere-turns*, *Thermal*,
+   *Response* and *Coil window* on the left (the coil and voltage/gauge readouts stay open). Folds remember their state.
+6. Move the **voltage** and **gauge** sliders. Torque/force update instantly from a pre-solved
    T(NI) curve; the field map and bottleneck analysis re-solve ~0.4 s after the slider stops.
-6. **Calibrate** the shear model in Model settings: paste one measurement per line (coil current A, force kgf). One
+7. **Calibrate** the shear model in Model settings: paste one measurement per line (coil current A, force kgf). One
    current level fits τsat; two or more also fit Bs (the bend of the curve). The fit table shows each point's error
    before you click *Use these values*.
-7. **Materials tab.** Library grades (1010, 1018, 12L14, C45, pure iron, FeCo, 416, 430, ductile and grey iron)
+8. **Materials tab.** Library grades (1010, 1018, 12L14, C45, pure iron, FeCo, 416, 430, ductile and grey iron)
    with knee and B at 1/5/40 kA/m, a per-grade *Scale* on the polarisation, a B-H plot, and *Add a custom B-H curve*
    (paste H in A/m, B in T). Library curves are typical annealed values derived from the 1010 curve.
-8. **Probes tab.** *Add point* / *Add line*, then click the section. Points report |B|, Br, Bz, H, μr; lines report
+9. **Probes tab.** *Add point* / *Add line*, then click the section. Points report |B|, Br, Bz, H, μr; lines report
    mean/max |B| and the flux through the surface the line sweeps around the axis (2π·|ψ(end) − ψ(start)|), with a plot
    of |B| and its across/along components. Probes are saved with the JSON and stay at fixed (r, z) in studies.
-9. **Thermal.** Model settings → Thermal: ambient, heat-transfer coefficient h, duty cycle, coil-to-case resistance,
+10. **Thermal.** Model settings → Thermal: ambient, heat-transfer coefficient h, duty cycle, coil-to-case resistance,
    temperature limit, cooled area (default: outer envelope of the model). The sidebar shows the steady coil temperature,
    cold → hot power / ampere-turns / torque, time to the limit when always on, the longest duty under the limit and the
    thermal time constant. *Solve at steady-state coil temperature* makes the operating point (and studies) use the hot coil.
-10. **Optimize tab.** Pick one or two Fusion *user parameters* (Modify → Change Parameters), a range and step count each, an
-   objective (torque, torque/W, torque/kg, flux utilisation, gap B, |B| at a point, steel B98, mass) and
+11. **Optimize tab.** Pick one or two Fusion *user parameters* (Modify → Change Parameters), a range and step count each, an
+   objective (torque, brake force, force per kg of steel, steel mass, torque/W, torque/kg, flux utilisation, gap B, |B| at a point, steel B98, mass) and
    limits (coil power and current density from Model settings, optional steel B98 cap). *Run study* sets each value in
    the CAD model, re-cuts the section in the frame of the loaded design, carries your body classes / roles / gap
    flags / coil pick over (matched by component path + body name), and solves at the slider voltage and gauge
@@ -55,17 +62,28 @@ Fusion keeps the Python loaded at start-up, while the palette HTML/JS is re-read
    (a lead-exit hole at that angle), it is closed at the outline of the original coil window and noted. The original expressions are restored when the study
    ends, is stopped, the palette closes or the add-in stops. Click a row to inspect that variant in the main view
    (CAD unchanged); *Apply to CAD* (click twice) writes the chosen value into the model. *Export CSV* saves every run.
-   Outside Fusion the study runs on the demo brake's four mock parameters.
-11. **Wire and winding** (Model settings → Coil and supply): SWG, AWG or metric (IEC 60317) wire; random winding
+   Outside Fusion the study runs on the demo brake's mock parameters.
+12. **Design map tab** (multi-variable sweep). Pick two or three user parameters, each with a min, max and step count.
+   Every combination (full factorial, up to 400 runs) is built in the CAD model, re-cut, solved at the slider voltage
+   and gauge, and recorded with its brake force, torque, steel mass, total mass, force per kg of steel, current,
+   power and steel B98. Steel mass is the CAD mass of the bodies treated as Magnetic steel (the revolved section at
+   7850 kg/m³ if a body has no CAD mass). Plots: *Force map* (heat map over parameters 1 × 2 with force and steel mass
+   in each cell; any metric can colour it), *Force vs steel mass* (every run, coloured by a parameter, with the
+   frontier of the lightest design for each force), and *Force vs parameter 1* (one line per value of parameter 2).
+   With three parameters, pick the slice of the third. Hover for values, click a cell, point or row to load that
+   variant in the main view (CAD unchanged), *Export CSV* saves every run. Example: sweep outer diameter against axial
+   length to compare a thin, large-diameter brake with a small, thick one. Outside Fusion it runs on the demo brake
+   (`outer_d`, `length`, `plate_t`, `lip_t`, `gap`, `ring_t`).
+13. **Wire and winding** (Model settings → Coil and supply): SWG, AWG or metric (IEC 60317) wire; random winding
    (packing factor), layer wound (square stacking) or orthocyclic; bobbin wall thickness (inner tube + two flanges).
    The gauge slider and Gauge sweep tab follow the chosen standard; the coil panel shows the copper fill.
-12. **Response** (sidebar): inductance at the operating point (secant), incremental and unsaturated, L₀/R, time to 90 %
+14. **Response** (sidebar): inductance at the operating point (secant), incremental and unsaturated, L₀/R, time to 90 %
    torque after switch-on and to 10 % after switch-off into a clamp (*Turn-off clamp voltage*, 0.7 V = diode), the
    voltage the switch sees, rotor inertia from the section and the time to stop the rotor alone from *Speed*.
-13. **Section check tab.** Re-cuts the design at other angles (relative to the current one), solves each at the current
+15. **Section check tab.** Re-cuts the design at other angles (relative to the current one), solves each at the current
    voltage and wire and flags angles whose torque or coil window differ by more than the tolerance, or whose body set
    changes. *View* loads that section (view only). Needs Fusion or the demo brake (bolt holes at 45°).
-14. **Compare & report tab.** *Save snapshot* stores results, settings, geometry and a thumbnail; the table compares
+16. **Compare & report tab.** *Save snapshot* stores results, settings, geometry and a thumbnail; the table compares
    snapshots against the first column (*Ref* changes it, *Restore* reloads one). *Export report (HTML)* writes a
    standalone page: inputs, results and limit breakdown, field map, curves, coil/thermal/response, bodies, gaps,
    snapshots and the section check. Snapshots and calibration data are saved in the JSON.
@@ -111,7 +129,7 @@ Validation (tools/): energy identity 1.000; mesh 1.5 → 0.35 mm changes torque 
 - `palette/insight.js` — electrical levers, sensitivities, limit classification, knee (no DOM).
 - `palette/materials.js` — steel grade library, CAD-name matching, custom B-H parsing, thermal properties (no DOM).
 - `palette/extras.js` — inductance, switching transient, rotor inertia, shear-model fit, section comparison (no DOM).
-- `palette/study.js` — parameter studies: setup carry-over, objectives/limits, 1-D grid + golden section, 2-D grid + quadratic surrogate + Nelder–Mead (no DOM).
+- `palette/study.js` — parameter studies: setup carry-over, objectives/limits, steel mass, full-factorial design maps, force/steel-mass frontier, 1-D grid + golden section, 2-D grid + quadratic surrogate + Nelder–Mead (no DOM).
 - `palette/ui.js`, `palette/index.html` — UI.
 - `tools/fusion_section_check.js` — runs the palette pipeline in Node on section JSON exported from Fusion (default setup, largest enclosed space as coil).
 - `tools/*.js` — Node validation scripts (`node tools/validate_solver.js`, `node tools/test_phase0.js`, `node tools/test_study.js`, `node tools/test_phase1.js`, `node tools/test_phase4.js`).

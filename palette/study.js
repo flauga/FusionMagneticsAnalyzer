@@ -91,8 +91,55 @@ function ferraStudyModule(root) {
     lineFlux: { label: 'Flux through a probe line', unit: 'mWb', dir: 'max', get: m => (m.lineFlux != null ? m.lineFlux * 1e3 : null), d: 4 },
     Tcoil: { label: 'Coil temperature (steady state)', unit: '°C', dir: 'min', get: m => m.Tcoil, d: 1 },
     steelB98: { label: 'Highest steel B98', unit: 'T', dir: 'min', get: m => m.steelB98, d: 3 },
-    mass: { label: 'Mass', unit: 'kg', dir: 'min', get: m => m.massKg, d: 3 }
+    mass: { label: 'Mass', unit: 'kg', dir: 'min', get: m => m.massKg, d: 3 },
+    force: { label: 'Brake force', unit: 'kgf', dir: 'max', get: m => m.Fkgf, d: 2 },
+    steelMass: { label: 'Steel mass', unit: 'kg', dir: 'min', get: m => m.steelMassKg, d: 3 },
+    forcePerSteelKg: { label: 'Force per kg of steel', unit: 'kgf/kg', dir: 'max', get: m => (m.steelMassKg > 0 && m.Fkgf != null ? m.Fkgf / m.steelMassKg : null), d: 2 }
   };
+
+  // ---------------------------------------------------------------- steel mass
+  const STEEL_RHO = 7850; // kg/m^3
+  /**
+   * Mass of the bodies treated as magnetic steel. Uses the CAD mass of each body when every steel body has one
+   * (catches holes and slots); otherwise revolves the section cells of the steel bodies (axisymmetric estimate).
+   */
+  function steelMass(G, bodies, cls) {
+    const ids = bodies.map((b, i) => i).filter(i => cls[i] === 'steel');
+    if (!ids.length) return { kg: 0, source: 'none' };
+    if (ids.every(i => bodies[i].massKg > 0)) return { kg: ids.reduce((s, i) => s + bodies[i].massKg, 0), source: 'cad' };
+    let m = 0;
+    if (G && G.cellBody) {
+      for (let j = 0; j < G.nz; j++) for (let i = 0; i < G.nr; i++) {
+        const b = G.cellBody[j * G.nr + i];
+        if (b < 0 || cls[b] !== 'steel') continue;
+        m += 2 * Math.PI * G.rc[i] * (G.rs[i + 1] - G.rs[i]) * (G.zs[j + 1] - G.zs[j]); // mm^3
+      }
+    }
+    return { kg: m * 1e-9 * STEEL_RHO, source: 'section' };
+  }
+
+  /** Brake force (kgf) at the force radius rForce (mm) through the output ratio. */
+  const forceKgf = (T, P) => (T != null && P.rForce > 0 ? T * (P.ratio || 1) / (P.rForce * 1e-3) / 9.80665 : null);
+
+  /** Full-factorial combinations of the axis grids: [[x0, y0, ...], ...], first axis varying fastest. */
+  function factorial(grids) {
+    let out = [[]];
+    for (const g of grids) {
+      const next = [];
+      for (const x of g) for (const r of out) next.push(r.concat([x]));
+      out = next;
+    }
+    return out;
+  }
+
+  /** Points on the upper-left frontier: no other point has less x and more (or equal) y. pts: [{x, y}]. */
+  function pareto(pts) {
+    const s = pts.filter(p => isFinite(p.x) && isFinite(p.y)).sort((a, b) => a.x - b.x || b.y - a.y);
+    const out = [];
+    let best = -Infinity;
+    for (const p of s) if (p.y > best) { out.push(p); best = p.y; }
+    return out;
+  }
 
   /** c: {Pmax, Jmax, steelB98Max, Tmax} (any may be null). Returns a list of violated limits. */
   function violations(m, c) {
@@ -159,12 +206,14 @@ function ferraStudyModule(root) {
     an.bodies.forEach(b => { if (mb.cls[b.id] === 'steel' && b.Bp98 > steelB98) { steelB98 = b.Bp98; steelB98Body = bodies[b.id].name; } });
     const pp = ctx.point ? FI.probePoint(G, sol, ctx.point[0], ctx.point[1]) : null;
     const pl = ctx.line ? FI.probeLine(G, sol, ctx.line[0], ctx.line[1], 40) : null;
+    const sm = steelMass(G, bodies, mb.cls);
     return {
       status: 'ok', notes,
       metrics: { T: sum.T.total, NI: e.NI, N: e.N, I: e.I, R: e.R, P: e.P, J: e.Jw, massKg: massKg != null ? massKg : env.massKg,
         util: sum.util, Bg: sum.Bg, gapMMF: sum.gapMMF, steelB98, steelB98Body, Bpoint: pp ? pp.B : null,
         lineFlux: pl ? pl.flux : null, Tcoil: th ? th.Tss : null, runaway: th ? th.runaway : false,
-        converged: sol.converged, coilAreaMM2: win.areaMM2 }
+        converged: sol.converged, coilAreaMM2: win.areaMM2, Fkgf: forceKgf(sum.T.total, P),
+        steelMassKg: sm.kg, steelMassSource: sm.source }
     };
   }
 
@@ -341,7 +390,7 @@ function ferraStudyModule(root) {
   const expr = (x, unit) => String(+x.toPrecision(6)) + (unit ? ' ' + unit : '');
 
   const api = { bodyKey, mapBodies, makeCfg, thermalEnv, gapSignature, mapGaps, coilMaskFromPicks, OBJECTIVES, violations, score,
-    evaluateGeometry, grid, sweep, sweep2, quadraticPeak, expr };
+    evaluateGeometry, grid, sweep, sweep2, quadraticPeak, expr, steelMass, forceKgf, factorial, pareto };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.FerraStudy = api;
   return api;
 }

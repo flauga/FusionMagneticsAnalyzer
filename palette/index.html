@@ -146,6 +146,44 @@
   table.compare th button { padding: 1px 6px; margin: 3px 3px 0 0; font-size: 11px; }
   table.compare img { border-radius: 3px; display: block; }
   #calOut table { margin: 4px 0; }
+  /* collapsible sections */
+  .folds { display: flex; flex-direction: column; gap: 0; border-top: 1px solid var(--line); }
+  details { border-bottom: 1px solid var(--line); }
+  details > summary { cursor: pointer; padding: 7px 2px; font-weight: 600; color: var(--muted); list-style: none; display: flex; align-items: center; gap: 6px; user-select: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "\25B8"; font-size: 10px; width: 10px; transition: transform 0.12s; }
+  details[open] > summary::before { transform: rotate(90deg); }
+  details > summary:hover { color: var(--ink); }
+  details > :not(summary) { margin-bottom: 8px; }
+  .sum-flag { color: var(--warn); font-weight: 600; margin-left: auto; font-size: 11.5px; }
+  /* balance verdict card */
+  .bal-card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; border-left-width: 5px; }
+  .bal-card.good { border-left-color: var(--ok); }
+  .bal-card.bad { border-left-color: var(--warn); }
+  .bal-card.info { border-left-color: var(--steel); }
+  .bal-card .bal-k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0; }
+  .bal-card .bal-h { font-size: 18px; font-weight: 650; margin: 2px 0 6px; line-height: 1.2; }
+  .bal-card.good .bal-h { color: var(--ok); }
+  .bal-card.bad .bal-h { color: var(--warn); }
+  .bal-card p { margin: 6px 0 0; }
+  .bal-card .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .chip { border: 1px solid var(--warn); color: var(--warn); border-radius: 10px; padding: 0 7px; font-size: 11px; }
+  .chip.okc { border-color: var(--ok); color: var(--ok); }
+  .mass-line { margin: -6px 0 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+  /* design map */
+  .map { display: grid; grid-template-columns: minmax(300px, 0.9fr) minmax(320px, 1.4fr); gap: 8px 16px; padding-top: 8px; }
+  .map-setup { display: flex; flex-direction: column; gap: 6px; }
+  .map-setup p { margin: 0; }
+  .map input[type=number] { width: 62px; }
+  .map-axis { border-left: 3px solid var(--copper); padding-left: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .map-axis:nth-of-type(2) { border-left-color: var(--steel); }
+  .map-out { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .map-out canvas { width: 100%; height: 300px; display: block; }
+  .map-table { grid-column: 1 / -1; }
+  .map [hidden] { display: none !important; }
+  #mpTip { position: fixed; pointer-events: none; background: rgba(15,18,22,0.94); color: #e9eef3; padding: 5px 8px; border-radius: 4px;
+    font-variant-numeric: tabular-nums; white-space: pre; display: none; font-size: 11.5px; z-index: 10; }
+  @media (max-width: 1100px) { .map { grid-template-columns: 1fr; } }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -182,28 +220,27 @@
     <h2>Coil</h2>
     <dl class="kv" id="coilKV"></dl>
   </div>
-  <div>
-    <h2>What moves the ampere-turns</h2>
-    <p class="regime" id="regime"></p>
-    <table class="mini" id="levers"></table>
-  </div>
-  <div>
-    <h2>Thermal (lumped)</h2>
-    <dl class="kv" id="thermKV"></dl>
-    <p class="note" id="thermNote"></p>
-  </div>
-  <div>
-    <h2>Response (inductance)</h2>
-    <dl class="kv" id="respKV"></dl>
-    <canvas id="respChart"></canvas>
-    <p class="note" id="respNote"></p>
-  </div>
-  <div>
-    <h2>Coil window</h2>
-    <p class="note" id="coilNote">Mark a body as Coil, or pick the empty winding space in the section.</p>
-    <div class="row"><button id="btnPickCoil">Pick coil window</button><button id="btnClearCoil">Clear pick</button></div>
-  </div>
   <div id="warnings"></div>
+  <div class="folds">
+    <details id="dCoilMore"><summary>More coil details</summary><dl class="kv" id="coilMoreKV"></dl></details>
+    <details id="dLevers"><summary>What moves the ampere-turns</summary>
+      <p class="regime" id="regime"></p>
+      <table class="mini" id="levers"></table>
+    </details>
+    <details id="dThermal"><summary>Thermal (lumped) <span class="sum-flag" id="thermFlag"></span></summary>
+      <dl class="kv" id="thermKV"></dl>
+      <p class="note" id="thermNote"></p>
+    </details>
+    <details id="dResp"><summary>Response (inductance)</summary>
+      <dl class="kv" id="respKV"></dl>
+      <canvas id="respChart"></canvas>
+      <p class="note" id="respNote"></p>
+    </details>
+    <details id="dCoilWin"><summary>Coil window</summary>
+      <p class="note" id="coilNote">Mark a body as Coil, or pick the empty winding space in the section.</p>
+      <div class="row"><button id="btnPickCoil">Pick coil window</button><button id="btnClearCoil">Clear pick</button></div>
+    </details>
+  </div>
 </aside>
 
 <main>
@@ -218,6 +255,7 @@
       <button role="tab" data-tab="bodies" aria-selected="true">Bodies</button>
       <button role="tab" data-tab="gaps" aria-selected="false">Working gaps</button>
       <button role="tab" data-tab="gauges" aria-selected="false">Gauge sweep</button>
+      <button role="tab" data-tab="map" aria-selected="false">Design map</button>
       <button role="tab" data-tab="study" aria-selected="false">Optimize</button>
       <button role="tab" data-tab="probes" aria-selected="false">Probes</button>
       <button role="tab" data-tab="materials" aria-selected="false">Materials</button>
@@ -237,6 +275,7 @@
   <div class="tabpanel" id="tab-bodies"></div>
   <div class="tabpanel" id="tab-gaps" hidden></div>
   <div class="tabpanel" id="tab-gauges" hidden></div>
+  <div class="tabpanel" id="tab-map" hidden></div>
   <div class="tabpanel" id="tab-study" hidden></div>
   <div class="tabpanel" id="tab-probes" hidden></div>
   <div class="tabpanel" id="tab-materials" hidden></div>
@@ -246,15 +285,18 @@
 </main>
 
 <section class="results">
+  <div class="bal-card" id="balCard"><p class="note">Load a design to see whether the brake is balanced.</p></div>
   <div class="big">
     <div><b id="rT">–</b><span>Torque, N·m</span></div>
     <div><b id="rF">–</b><span id="rFlabel">Force, kgf</span></div>
   </div>
-  <dl class="kv" id="resKV"></dl>
-  <div class="verdict" id="verdict"><p class="note">Results appear after the first solve.</p></div>
-  <div>
-    <h2>Torque vs ampere-turns</h2>
-    <canvas id="curve"></canvas>
+  <p class="mass-line" id="massLine"></p>
+  <div class="folds">
+    <details id="dWhy"><summary>Why: lever breakdown</summary>
+      <div class="verdict" id="verdict"><p class="note">Results appear after the first solve.</p></div>
+    </details>
+    <details id="dField"><summary>Field details</summary><dl class="kv" id="resKV"></dl></details>
+    <details id="dCurve"><summary>Torque vs ampere-turns</summary><canvas id="curve"></canvas></details>
   </div>
 </section>
 

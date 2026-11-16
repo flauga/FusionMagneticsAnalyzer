@@ -212,6 +212,12 @@ def extract(opts):
                 mass += b.physicalProperties.mass  # kg
             except Exception:
                 pass
+    # Per-body CAD mass (kg) so the palette can total the steel mass of each design variant.
+    for entry in sec:
+        try:
+            entry['massKg'] = round(_bodies[entry['id']].physicalProperties.mass, 6)
+        except Exception:
+            pass
     return {
         'massKg': mass,
         'ok': True,

@@ -177,7 +177,7 @@
     $('coilNote').textContent = hasCoil
       ? `Window ${fmt(S.prob.coilAreaM2 * 1e6, 0)} mm², mean radius ${fmt(S.prob.coilRmean * 1e3, 1)} mm.${S.coilClipped ? ' The picked space opens to the outside in this section (lead hole?); closed at the earlier window outline.' : ''}`
       : 'No coil found. Mark a body as Coil, or pick the empty winding space in the section.';
-    if (!hasCoil) { status('Needs a coil window', 'err'); updateElectrical(); return; }
+    if (!hasCoil) { $('dCoilWin').open = true; status('Needs a coil window', 'err'); updateElectrical(); return; }
     if (!S.prob.gaps.some(g => g.torque)) status('No torque gap found: set rotor/stator roles', 'err');
     S.compute.call('load', { bodies: S.geo.bodies, hmax: P.hmax, cfg: cfg(), gaps: S.prob.gaps }).catch(fail);
     runSweep();
@@ -257,12 +257,15 @@
       ['Turns' + (P.turnsOverride > 0 ? ' (fixed)' : ' (fit)'), `<dd${flag}>${e.N}${P.turnsOverride > 0 ? ` <span class="note">fits ${e.Nfit}</span>` : ''}</dd>`],
       ['Resistance at ' + P.tempC + ' °C', `<dd>${fmt(e.R, 2)} Ω</dd>`],
       ['Current', `<dd>${fmt(e.I, 2)} A</dd>`],
-      ['Limited by', `<dd>${e.limitedBy}</dd>`],
       ['Ampere-turns', `<dd>${fmt(e.NI, 0)} A-t</dd>`],
       ['Power', `<dd${e.P > P.Pmax ? ' class="flag"' : ''}>${fmt(e.P, 1)} W</dd>`],
-      ['Current density', `<dd${e.Jw > P.Jmax ? ' class="flag"' : ''}>${fmt(e.Jw, 2)} A/mm²</dd>`],
+      ['Current density', `<dd${e.Jw > P.Jmax ? ' class="flag"' : ''}>${fmt(e.Jw, 2)} A/mm²</dd>`]
+    ].map(([k, v]) => `<dt>${k}</dt>${v}`).join('');
+    $('coilMoreKV').innerHTML = [
+      ['Limited by', `<dd>${e.limitedBy}</dd>`],
       ['Wire length', `<dd>${fmt(e.lengthM, 1)} m</dd>`],
-      ['Copper fill of window', `<dd>${fmt(100 * e.fill, 0)} %</dd>`]
+      ['Copper fill of window', `<dd>${fmt(100 * e.fill, 0)} %</dd>`],
+      ['Power limit / density limit', `<dd>${P.Pmax} W / ${P.Jmax} A/mm²</dd>`]
     ].map(([k, v]) => `<dt>${k}</dt>${v}`).join('');
     $('gHint').textContent = `${fmt(e.di, 3)} mm over enamel`;
     renderLevers();
@@ -362,7 +365,11 @@
     if (!an || !st) {
       $('resKV').innerHTML = '';
       v.className = 'verdict';
-      v.innerHTML = `<p class="note">${prob && !prob.coilAreaM2 ? 'Needs a coil window.' : 'Results appear after the first solve.'}</p>`;
+      const msg = !S.geo ? 'Load a design to see whether the brake is balanced.' : prob && !prob.coilAreaM2 ? 'Needs a coil window: mark a body as Coil or pick the winding space (Coil window, left).' : 'Solving the field…';
+      v.innerHTML = `<p class="note">${msg}</p>`;
+      $('balCard').className = 'bal-card' + (S.stale ? ' stale' : '');
+      $('balCard').innerHTML = `<p class="note">${msg}</p>`;
+      renderMassLine();
       return;
     }
     const { T, phiGap, util, Bg, gapMMF } = FI.summarize(F, prob, st, an, tp());
@@ -400,10 +407,7 @@
       powder: 'Powder-shear limited', flat: 'Torque barely responds', pending: 'Working out what limits torque…' };
     S.sum = { util, Bg, gapMMF, kind: lb.kind, label: LABEL[lb.kind] };
     lines.push(`<p class="head"><strong>${LABEL[lb.kind]}</strong></p>`);
-    if (lb.steelShare != null) {
-      lines.push(`<div class="balance" title="Share of the marginal torque gain that comes from steel vs ampere-turns"><span style="width:${(100 * lb.steelShare).toFixed(0)}%"></span></div>
-        <div class="balance-lbl"><span>Ampere-turns ${fmt(100 * (1 - lb.steelShare), 0)} %</span><span>Steel ${fmt(100 * lb.steelShare, 0)} %</span></div>`);
-    }
+    renderBalanceCard(lb, { name, at, raiseNI, tauFrac, util });
     if (lb.kind === 'steel') lines.push(`<p>More flux capacity in the steel buys ${fmt(lb.steelShare / Math.max(1e-6, 1 - lb.steelShare), 1)}× more torque than the same percentage more ampere-turns.${lb.neck ? ` Biggest lever: <strong>${name(lb.neck.id)}</strong>${at(lb.neck.id)}. Add cross-section there before adding turns or current.` : ''}</p>`);
     else if (lb.kind === 'ampere') lines.push(`<p>The steel has headroom and torque follows NI. To get more NI, ${raiseNI}.</p>`);
     else if (lb.kind === 'balanced') lines.push(`<p>Neither lever dominates.${lb.neck ? ` The steel lever is mainly <strong>${name(lb.neck.id)}</strong>${at(lb.neck.id)}.` : ''}</p>`);
@@ -427,6 +431,55 @@
     lines.push(`<p class="note">Energy check ${fmt(an.energyCheck, 3)} · solver ${esc(S.compute.mode)}.</p>`);
     v.className = 'verdict ' + (lb.kind === 'steel' ? 'steel' : '') + (S.stale ? ' stale' : '');
     v.innerHTML = lines.join('');
+    renderMassLine();
+  }
+
+  // Headline verdict: is the brake balanced between steel and ampere-turns? Details stay in "Why: lever breakdown".
+  function renderBalanceCard(lb, x) {
+    const card = $('balCard');
+    const share = lb.steelShare;
+    const bar = share != null ? `<div class="balance" title="Share of the marginal torque gain that comes from steel vs ampere-turns"><span style="width:${(100 * share).toFixed(0)}%"></span></div>
+        <div class="balance-lbl"><span>Ampere-turns ${fmt(100 * (1 - share), 0)} %</span><span>Steel ${fmt(100 * share, 0)} %</span></div>` : '';
+    const neck = lb.neck ? `<strong>${x.name(lb.neck.id)}</strong>${x.at(lb.neck.id)}` : 'the most saturated steel (see Bodies)';
+    let tone = 'info', head = '', body = '';
+    if (lb.kind === 'pending') { head = 'Checking balance…'; body = 'Running the sensitivity solves.'; }
+    else if (lb.kind === 'balanced') {
+      tone = 'good'; head = 'Well balanced';
+      body = 'Steel and ampere-turns both limit torque about equally: neither the iron nor the copper is being wasted.';
+    } else if (lb.kind === 'steel') {
+      tone = 'bad'; head = 'Not balanced: steel-limited';
+      body = `The steel saturates before the coil runs out of ampere-turns. Add cross-section at ${neck}, or use less copper / power for the same torque.`;
+    } else if (lb.kind === 'ampere') {
+      tone = 'bad'; head = 'Not balanced: ampere-turn limited';
+      body = `The steel has headroom, so it is heavier than it needs to be for this coil. Either trim steel, or ${x.raiseNI}.`;
+    } else if (lb.kind === 'powder') {
+      tone = 'info'; head = 'Powder-shear limited';
+      body = `The gap is at ${fmt(100 * x.tauFrac, 0)} % of shear saturation. More flux buys little; more radius, active length or shear surfaces do.`;
+    } else if (lb.kind === 'flat') {
+      tone = 'bad'; head = 'Torque does not respond';
+      body = 'Neither ampere-turns nor steel changes torque. Check the torque gaps in the Working gaps tab.';
+    }
+    const e = elec(), st = coilAt(), th = st && st.th, chips = [];
+    if (e.P > P.Pmax) chips.push(`power ${fmt(e.P, 1)} W > ${P.Pmax} W`);
+    if (e.Jw > P.Jmax) chips.push(`J ${fmt(e.Jw, 1)} > ${P.Jmax} A/mm²`);
+    if (e.overfill) chips.push('turns do not fit');
+    if (th && th.runaway) chips.push('thermal runaway');
+    else if (th && th.overMax) chips.push(`coil ${fmt(th.Tss, 0)} °C > ${P.Tmax} °C`);
+    if (lb.bypass) chips.push(`flux bypass: ${fmt(100 * x.util, 0)} % reaches the gap`);
+    card.className = `bal-card ${tone}` + (S.stale ? ' stale' : '');
+    card.innerHTML = `<p class="bal-k">Balance</p><p class="bal-h">${head}</p>${bar}<p>${body}</p>
+      <div class="chips">${chips.length ? chips.map(c => `<span class="chip">${esc(c)}</span>`).join('') : (lb.kind === 'pending' ? '' : '<span class="chip okc">within power, density and thermal limits</span>')}</div>`;
+  }
+
+  /** Steel and total mass of the loaded design (CAD body masses when available, else the revolved section). */
+  function steelMassNow() {
+    if (!S.G || !S.geo) return null;
+    return FS.steelMass(S.G, S.geo.bodies, S.meta.map(m => m.cls));
+  }
+  function renderMassLine() {
+    const el = $('massLine'), sm = steelMassNow(), env = thermalEnvNow();
+    if (!sm) { el.textContent = ''; return; }
+    el.innerHTML = `Steel ${fmt(sm.kg, 3)} kg${env ? ` · whole brake ≈ ${fmt(env.massKg, 2)} kg` : ''} <span class="note" title="${sm.source === 'cad' ? 'Sum of the CAD masses of the bodies treated as steel' : 'Revolved section of the steel bodies at 7850 kg/m³'}">(${sm.source === 'cad' ? 'CAD' : 'from section'})</span>`;
   }
 
   // ------------------------------------------------------------------ tables
@@ -597,6 +650,11 @@
     if (b.dataset.tab === 'probes') renderProbes();
     if (b.dataset.tab === 'sections') renderSections();
     if (b.dataset.tab === 'compare') renderCompare();
+    if (b.dataset.tab === 'map') {
+      if (!ST.params.length && (inFusion() || (S.geo && S.geo.source === window.FERRA_DEMO.source))) loadParams();
+      else if (!$('tab-map').firstChild || !$('mpChart')) renderMap();
+      else drawMap();
+    }
     if (b.dataset.tab === 'study') {
       if (!ST.params.length && (inFusion() || (S.geo && S.geo.source === window.FERRA_DEMO.source))) loadParams();
       else if (!ST.params.length) renderStudy();
@@ -629,8 +687,9 @@
   };
   $('btnDemo').onclick = () => {
     ST.mock = {}; ST.params = []; ST.msg = ''; ST.spec = null; ST.pts = []; ST.preview = null;
+    if (!MP.running) { MP.spec = null; MP.pts = []; }
     loadGeometry(JSON.parse(JSON.stringify(window.FERRA_DEMO)));
-    if (!$('tab-study').hidden) loadParams();
+    if (!$('tab-study').hidden || !$('tab-map').hidden) loadParams();
   };
   $('btnOpen').onclick = async () => {
     if (inFusion()) {
@@ -1142,6 +1201,7 @@
   function renderThermal() {
     const kv = $('thermKV'), note = $('thermNote');
     const st = S.prob && S.prob.coilAreaM2 ? coilAt() : null, th = st && st.th;
+    $('thermFlag').textContent = th ? (th.runaway ? 'runaway' : th.overMax ? `${fmt(th.Tss, 0)} °C` : '') : '';
     if (!th) { kv.innerHTML = ''; note.textContent = 'Needs a coil window.'; return; }
     const env = thermalEnvNow(), flagT = th.runaway || th.overMax ? ' class="flag"' : '';
     const Tq = S.sweep ? [torqueAt(th.cold.NI), torqueAt(th.hot.NI)] : null;
@@ -1215,6 +1275,7 @@
   async function loadParams() {
     ST.msg = 'Reading user parameters…';
     renderStudy();
+    renderMap();
     try {
       const r = await cad.list();
       ST.params = [];
@@ -1222,14 +1283,15 @@
       else if (!r.parametric) ST.msg = 'Parameter studies need a parametric design (timeline / design history on).';
       else if (!r.params.length) ST.msg = 'This design has no user parameters. Add them in Modify → Change Parameters and drive the dimensions you want to sweep from them.';
       else { ST.params = r.params; ST.msg = ''; }
-      if (r.ok && r.studyActive) await cad.restore(); // an earlier study was interrupted
+      if (r.ok && r.studyActive && !MP.running) await cad.restore(); // an earlier study was interrupted
     } catch (e) {
       ST.params = []; ST.msg = 'Could not read parameters: ' + (e.message || e);
     }
     renderStudy();
+    renderMap();
   }
 
-  const OBJ_KEYS = ['torque', 'torquePerW', 'torquePerKg', 'util', 'Bgap', 'Bpoint', 'lineFlux', 'steelB98', 'Tcoil', 'mass'];
+  const OBJ_KEYS = ['torque', 'force', 'forcePerSteelKg', 'steelMass', 'torquePerW', 'torquePerKg', 'util', 'Bgap', 'Bpoint', 'lineFlux', 'steelB98', 'Tcoil', 'mass'];
   const probeOpts = type => S.probes.map((p, i) => ({ p, i })).filter(o => o.p.type === type);
 
   function axisRow(n) {
@@ -1344,7 +1406,7 @@
     $('stRun').disabled = on; $('stStop').disabled = !on;
   }
 
-  function studyMsg(m, kind) { if ($('stProg')) $('stProg').textContent = m; status(m, kind || 'err'); }
+  function studyMsg(m, kind) { if ($('stProg')) $('stProg').textContent = m; status(m, kind == null ? 'err' : kind); }
 
   /** Classes, roles, gap flags and coil picks of the design in the main view, keyed for re-mapping. */
   function snapshotSetup() {
@@ -1369,6 +1431,7 @@
 
   async function runStudy() {
     if (ST.running) return;
+    if (MP.running) return studyMsg('A design map is running. Wait for it or stop it first.');
     if (!S.geo || !S.prob) return studyMsg('Load a design and set it up first.');
     if (!S.prob.coilAreaM2) return studyMsg('Set up the coil window first.');
     if (!S.prob.gaps.some(g => g.torque)) return studyMsg('No torque gap: set rotor/stator roles first.');
@@ -1713,6 +1776,445 @@
     if (tr) previewPoint(+tr.dataset.k);
   });
 
+  // ------------------------------------------------------------------ design map (multi-variable sweep)
+  // Full-factorial sweep of two or three CAD user parameters: every combination from min to max is built in the CAD
+  // model, re-cut, solved at the slider voltage and gauge, and recorded with its brake force and steel mass. Plots:
+  // force heat map (steel mass in each cell), force vs steel mass (with the lightest-for-its-force frontier), and
+  // force vs the first parameter with one line per value of the second.
+  const MP = { spec: null, pts: [], running: false, stop: false, view: 'heat', slice: 0, colorBy: 0, hits: [] };
+  const MAP_MAX_RUNS = 400;
+  const MAP_METRICS = {
+    force: { label: 'Brake force', unit: 'kgf', d: 2, get: m => m.Fkgf },
+    torque: { label: 'Torque', unit: 'N·m', d: 3, get: m => m.T },
+    steelMass: { label: 'Steel mass', unit: 'kg', d: 3, get: m => m.steelMassKg },
+    forcePerSteelKg: { label: 'Force per kg of steel', unit: 'kgf/kg', d: 2, get: m => (m.steelMassKg > 0 && m.Fkgf != null ? m.Fkgf / m.steelMassKg : null) },
+    power: { label: 'Coil power', unit: 'W', d: 1, get: m => m.P },
+    steelB98: { label: 'Highest steel B98', unit: 'T', d: 2, get: m => m.steelB98 }
+  };
+
+  function mapAxisRow(n) {
+    const p = ST.params, def = Math.min(n, p.length - 1);
+    return `<div class="map-axis" data-ax="${n}"><div class="row"><label>${n === 2 ? '<input type="checkbox" id="mpUse2"> ' : ''}Parameter ${n + 1}
+        <select id="mpP${n}">${p.map((q, i) => `<option value="${i}"${i === def ? ' selected' : ''}>${esc(q.name)} = ${esc(q.expression)}</option>`).join('')}</select></label></div>
+      <div class="row" id="mpR${n}"><label>min <input type="number" id="mpLo${n}" step="any"></label><label>max <input type="number" id="mpHi${n}" step="any"></label>
+        <span id="mpU${n}"></span><label>steps <input type="number" id="mpN${n}" value="${n === 2 ? 3 : 5}" min="2" max="21" step="1"></label></div>
+      <p class="note" id="mpI${n}"></p></div>`;
+  }
+
+  /** Suggest a range around the current value, nudged toward the demo's thin-and-wide vs small-and-thick example. */
+  function mapDefaults(n) {
+    const p = ST.params[+$('mpP' + n).value];
+    if (!p) return;
+    $('mpU' + n).textContent = p.unit || '';
+    $('mpI' + n).innerHTML = [p.comment ? esc(p.comment) + '.' : '', `Now ${esc(p.expression)}.`, p.driven ? 'Driven by other parameters; replaced by numbers during the sweep and put back afterwards.' : ''].join(' ');
+    const v = p.value;
+    if (v > 0) { $('mpLo' + n).value = nice(v * 0.7); $('mpHi' + n).value = nice(v * 1.3); }
+    else if (v < 0) { $('mpLo' + n).value = nice(v * 1.3); $('mpHi' + n).value = nice(v * 0.7); }
+    else { $('mpLo' + n).value = -1; $('mpHi' + n).value = 1; }
+  }
+
+  function mapCount() {
+    if (!$('mpCount')) return;
+    const n = [0, 1, 2].filter(k => k < 2 || ($('mpUse2') && $('mpUse2').checked)).reduce((s, k) => s * (Math.round(+$('mpN' + k).value) || 0), 1);
+    $('mpCount').textContent = `${n} combinations`;
+    $('mpCount').className = n > MAP_MAX_RUNS ? 'warn' : 'note';
+  }
+
+  function renderMap() {
+    const el = $('tab-map');
+    if (ST.params.length < 2) {
+      el.innerHTML = `<div class="study-empty"><p class="note">${esc(ST.params.length === 1 ? 'A design map needs at least two user parameters.' : (ST.msg || 'Sweep two or three CAD parameters over every combination and see how brake force and steel mass change together (for example a thin, large-diameter brake against a small, thick one).'))}</p>
+        <button data-mact="load">Load user parameters</button></div>`;
+      return;
+    }
+    el.innerHTML = `<div class="map">
+      <div class="map-setup">
+        ${mapAxisRow(0)}${mapAxisRow(1)}${ST.params.length >= 3 ? mapAxisRow(2) : ''}
+        <label class="chk"><input type="checkbox" id="mpLim"> Mark runs over the coil power / current-density limits</label>
+        <div class="row"><button class="primary" data-mact="run" id="mpRun">Run design map</button><button data-mact="stop" id="mpStop" disabled>Stop</button>
+          <span class="note" id="mpCount"></span></div>
+        <p class="note" id="mpProg"></p>
+        <p class="note">Every combination of the parameters, min to max, is built in the CAD model and solved at the slider voltage and wire gauge (turns refitted to each coil window). Steel mass is the CAD mass of the bodies treated as steel. Parameters are put back at the end.</p>
+      </div>
+      <div class="map-out">
+        <div class="row"><label>Plot <select id="mpView">
+            <option value="heat">Force map (steel mass in each cell)</option>
+            <option value="scatter">Force vs steel mass</option>
+            <option value="lines">Force vs parameter 1</option></select></label>
+          <label id="mpMetricL">Colour <select id="mpMetric">${Object.keys(MAP_METRICS).map(k => `<option value="${k}">${MAP_METRICS[k].label}</option>`).join('')}</select></label>
+          <label id="mpSliceL" hidden><span id="mpSliceN"></span> <select id="mpSlice"></select></label></div>
+        <canvas id="mpChart" title="Hover for values, click to show that variant in the main view"></canvas>
+        <div id="mpSum"></div>
+      </div>
+      <div class="map-table" id="mpTable"></div>
+    </div>`;
+    for (const n of [0, 1, 2]) if ($('mpP' + n)) { $('mpP' + n).onchange = () => mapDefaults(n); mapDefaults(n); $('mpN' + n).oninput = mapCount; }
+    if ($('mpUse2')) {
+      const sync = () => { $('mpR2').hidden = $('mpI2').hidden = !$('mpUse2').checked; $('mpP2').disabled = !$('mpUse2').checked; mapCount(); };
+      $('mpUse2').onchange = sync; sync();
+    }
+    // a parameter list from the demo: start on the diameter vs length example
+    const iD = ST.params.findIndex(p => p.name === 'outer_d'), iL = ST.params.findIndex(p => p.name === 'length');
+    if (iD >= 0 && iL >= 0 && !MP.spec) { $('mpP0').value = iD; $('mpP1').value = iL; mapDefaults(0); mapDefaults(1);
+      $('mpLo0').value = 90; $('mpHi0').value = 130; $('mpLo1').value = 30; $('mpHi1').value = 60; }
+    if (MP.spec) MP.spec.axes.forEach((a, n) => {
+      const i = ST.params.findIndex(p => p.name === a.p.name);
+      if (i >= 0 && $('mpP' + n)) { $('mpP' + n).value = i; mapDefaults(n); $('mpLo' + n).value = a.lo; $('mpHi' + n).value = a.hi; $('mpN' + n).value = a.n; }
+      if (n === 2 && $('mpUse2')) { $('mpUse2').checked = true; $('mpUse2').onchange(); }
+    });
+    $('mpView').value = MP.view;
+    $('mpView').onchange = () => { MP.view = $('mpView').value; mapControls(); drawMap(); };
+    $('mpMetric').onchange = () => drawMap();
+    $('mpSlice').onchange = () => { MP.slice = +$('mpSlice').value; drawMap(); };
+    mapCount();
+    $('mpRun').disabled = MP.running; $('mpStop').disabled = !MP.running;
+    mapControls();
+    renderMapResults();
+  }
+
+  /** Show the colour and slice pickers that apply to the current plot. */
+  function mapControls() {
+    if (!$('mpView')) return;
+    const sp = MP.spec, three = sp && sp.axes.length === 3;
+    $('mpMetricL').hidden = MP.view === 'lines';
+    $('mpMetricL').firstChild.textContent = MP.view === 'scatter' ? 'Colour by ' : 'Colour ';
+    if (MP.view === 'scatter') {
+      $('mpMetric').innerHTML = (sp ? sp.axes : []).map((a, n) => `<option value="ax${n}">${esc(a.p.name)}</option>`).join('');
+    } else if (!$('mpMetric').querySelector('option[value=force]')) {
+      $('mpMetric').innerHTML = Object.keys(MAP_METRICS).map(k => `<option value="${k}">${MAP_METRICS[k].label}</option>`).join('');
+    }
+    $('mpSliceL').hidden = !(three && MP.view !== 'scatter');
+    if (three) {
+      const a = sp.axes[2];
+      $('mpSliceN').textContent = a.p.name;
+      $('mpSlice').innerHTML = a.grid.map((x, i) => `<option value="${i}"${i === MP.slice ? ' selected' : ''}>${FS.expr(x, a.p.unit)}</option>`).join('');
+    }
+  }
+
+  function readMapAxis(n) {
+    const p = ST.params[+$('mpP' + n).value];
+    const lo = parseFloat($('mpLo' + n).value), hi = parseFloat($('mpHi' + n).value), k = Math.round(parseFloat($('mpN' + n).value));
+    if (!(hi > lo)) return `${p.name}: min must be below max.`;
+    if (!(k >= 2 && k <= 21)) return `${p.name}: use 2 to 21 steps.`;
+    return { p, lo, hi, n: k, grid: FS.grid(lo, hi, k, false).map(x => +x.toPrecision(6)) };
+  }
+
+  async function runMap() {
+    if (MP.running) return;
+    const msg = (m, kind) => { if ($('mpProg')) $('mpProg').textContent = m; status(m, kind == null ? 'err' : kind); };
+    if (ST.running) return msg('An Optimize study is running. Wait for it or stop it first.');
+    if (!S.geo || !S.prob) return msg('Load a design and set it up first.');
+    if (!S.prob.coilAreaM2) return msg('Set up the coil window first.');
+    if (!S.prob.gaps.some(g => g.torque)) return msg('No torque gap: set rotor/stator roles first.');
+    const axes = [readMapAxis(0), readMapAxis(1)];
+    if ($('mpUse2') && $('mpUse2').checked) axes.push(readMapAxis(2));
+    const bad = axes.find(a => typeof a === 'string');
+    if (bad) return msg(bad);
+    if (new Set(axes.map(a => a.p.name)).size !== axes.length) return msg('Pick different parameters on each axis.');
+    const combos = FS.factorial(axes.map(a => a.grid));
+    if (combos.length > MAP_MAX_RUNS) return msg(`${combos.length} combinations: keep it to ${MAP_MAX_RUNS} or fewer (fewer steps).`);
+    const cons = $('mpLim').checked ? { Pmax: P.Pmax, Jmax: P.Jmax } : {};
+    MP.spec = { axes, V: P.V, swg: P.swg, cons, rForce: P.rForce, ratio: P.ratio };
+    MP.pts = []; MP.slice = 0; MP.running = true; MP.stop = false;
+    if (ST.preview == null) ST.baseGeo = S.geo;
+    ST.frame = S.geo.axis && S.geo.axis.origin ? { origin: S.geo.axis.origin, dir: S.geo.axis.dir } : null;
+    ST.angle = parseFloat($('angle').value) || 0;
+    const setup = snapshotSetup();
+    if (!ST.compute) ST.compute = window.ferraCompute(F);
+    const ctx = { F, FI, FM, P: Object.assign({}, P), mat: S.mat, compute: ST.compute, classify, point: null, line: null,
+      base: { bodies: setup.bodies, gaps: setup.gaps, coilPicks: setup.coilPicks, coilBox: setup.coilBox, overlaps: setup.overlaps } };
+    $('mpRun').disabled = true; $('mpStop').disabled = false;
+    mapControls();
+    const t0 = Date.now();
+    let restoreMsg = '';
+    try {
+      for (let k = 0; k < combos.length && !MP.stop; k++) {
+        const v = combos[k];
+        const eta = k ? ` · about ${fmtDur((Date.now() - t0) / 1000 / k * (combos.length - k))} left` : '';
+        const label = `Run ${k + 1}/${combos.length}: ${axes.map((a, n) => `${a.p.name} = ${FS.expr(v[n], a.p.unit)}`).join(', ')}${eta}`;
+        if ($('mpProg')) $('mpProg').textContent = label;
+        status(label, 'busy');
+        const pt = { k: k + 1, v };
+        try {
+          const r = await cad.evalPoint(axes.map((a, n) => [a.p, v[n]]));
+          if (!r.ok) { MP.stop = true; throw new Error(r.error || 'CAD update failed'); }
+          if (!r.feasible) { pt.status = 'cad'; pt.reason = r.errors.join('; '); }
+          else {
+            Object.assign(pt, await FS.evaluateGeometry(ctx, r.geometry, r.massKg));
+            if (pt.status === 'ok') { pt.geo = r.geometry; pt.violations = FS.violations(pt.metrics, cons); }
+          }
+        } catch (e) { pt.status = 'error'; pt.reason = String((e && e.message) || e).split('\n')[0]; }
+        MP.pts.push(pt);
+        renderMapResults();
+      }
+    } catch (e) { fail(e); } finally {
+      try {
+        const r = await cad.restore();
+        if (!r.ok) restoreMsg = 'Could not restore parameters: ' + (r.errors || [r.error]).join('; ');
+      } catch (e) { restoreMsg = 'Could not restore parameters: ' + (e.message || e); }
+      MP.running = false;
+      if ($('mpRun')) { $('mpRun').disabled = false; $('mpStop').disabled = true; }
+      renderMapResults();
+      msg(restoreMsg || (MP.stop ? 'Design map stopped. Parameters restored.' : `Design map done (${MP.pts.length} runs). Parameters restored.`), restoreMsg ? 'err' : '');
+    }
+  }
+
+  const mpOk = p => p.status === 'ok' && p.metrics && p.metrics.Fkgf != null;
+  const mpLabel = v => MP.spec.axes.map((a, n) => `${a.p.name} = ${FS.expr(v[n], a.p.unit)}`).join(', ');
+  const sameV = (a, b) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a));
+
+  function renderMapResults() {
+    if (!$('mpTable')) return;
+    const sp = MP.spec;
+    if (!sp) { $('mpTable').innerHTML = ''; $('mpSum').innerHTML = ''; drawMap(); return; }
+    const ok = MP.pts.filter(mpOk);
+    const front = new Set(FS.pareto(ok.map(p => ({ x: p.metrics.steelMassKg, y: p.metrics.Fkgf, p }))).map(q => q.p));
+    const stat = p => p.status === 'ok' ? (p.violations.length ? `<span class="warn">over limit: ${esc(p.violations.join(', '))}</span>` : (p.metrics.converged ? 'ok' : '<span class="warn">not fully converged</span>'))
+      : p.status === 'cad' ? `<span class="warn">CAD: ${esc(p.reason)}</span>` : `<span class="warn">${esc(p.reason || 'failed')}</span>`;
+    $('mpTable').innerHTML = MP.pts.length ? `<table><thead><tr>${sp.axes.map(a => `<th>${esc(a.p.name)}${a.p.unit ? ', ' + esc(a.p.unit) : ''}</th>`).join('')}
+      <th>Force, kgf</th><th>Torque, N·m</th><th>Steel, kg</th><th>Total, kg</th><th>kgf per kg steel</th><th>I, A</th><th>P, W</th><th>Steel B98, T</th><th class="l">Status</th></tr></thead><tbody>${
+      MP.pts.map(p => { const m = p.metrics || {}; return `<tr data-mk="${p.k}" class="${front.has(p) ? 'best' : ''} ${ST.preview === 'map:' + p.k ? 'prev' : ''}" title="Click to show this variant in the main view">
+        ${p.v.map(x => `<td>${fmt(x, 3)}</td>`).join('')}<td>${fmt(m.Fkgf, 2)}</td><td>${fmt(m.T, 3)}</td><td>${fmt(m.steelMassKg, 3)}</td><td>${fmt(m.massKg, 3)}</td>
+        <td>${fmt(MAP_METRICS.forcePerSteelKg.get(m), 2)}</td><td>${fmt(m.I, 2)}</td><td>${fmt(m.P, 1)}</td><td>${fmt(m.steelB98, 2)}</td><td class="l">${stat(p)}</td></tr>`; }).join('')
+    }</tbody></table><p class="note">Green rows are the lightest designs for their force (no other run gives more force with less steel).</p>` : '';
+    let html = '';
+    if (ok.length) {
+      const big = ok.reduce((b, p) => (p.metrics.Fkgf > b.metrics.Fkgf ? p : b));
+      const eff = ok.reduce((b, p) => (MAP_METRICS.forcePerSteelKg.get(p.metrics) > MAP_METRICS.forcePerSteelKg.get(b.metrics) ? p : b));
+      html += `<p><strong>Most force:</strong> ${esc(mpLabel(big.v))} → ${fmt(big.metrics.Fkgf, 1)} kgf with ${fmt(big.metrics.steelMassKg, 2)} kg steel</p>
+        <p><strong>Most force per kg of steel:</strong> ${esc(mpLabel(eff.v))} → ${fmt(eff.metrics.Fkgf, 1)} kgf, ${fmt(eff.metrics.steelMassKg, 2)} kg (${fmt(MAP_METRICS.forcePerSteelKg.get(eff.metrics), 1)} kgf/kg)</p>`;
+    }
+    const failed = MP.pts.length - ok.length;
+    if (failed) html += `<p class="warn">${failed} combination(s) could not be built or solved (see Status).</p>`;
+    html += `<div class="row">${ST.preview != null ? '<button data-mact="back">Back to the current design</button>' : ''}${MP.pts.length ? '<button data-mact="csv">Export CSV</button>' : ''}</div>`;
+    html += `<p class="note">At ${sp.V} V, ${esc(String((F.wireList(P.wire).find(o => o.key === sp.swg) || {}).name || sp.swg))}; force at r = ${sp.rForce} mm${sp.ratio !== 1 ? ` × ${sp.ratio}` : ''}.</p>`;
+    $('mpSum').innerHTML = html;
+    drawMap();
+  }
+
+  function mapValue(p, key) {
+    if (!mpOk(p)) return null;
+    const v = MAP_METRICS[key].get(p.metrics);
+    return v != null && isFinite(v) ? v : null;
+  }
+
+  function drawMap() {
+    const c = $('mpChart');
+    if (!c) return;
+    const g = c.getContext('2d'), dpr = window.devicePixelRatio || 1, W = c.clientWidth, H = c.clientHeight;
+    if (!W || !H) return;
+    c.width = W * dpr; c.height = H * dpr; g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, W, H);
+    MP.hits = [];
+    const col = chartColors();
+    g.font = '10.5px sans-serif'; g.fillStyle = col.ink;
+    if (!MP.spec) { g.fillText('Results of the design map appear here.', 10, 20); return; }
+    if (MP.view === 'scatter') drawMapScatter(g, W, H, col);
+    else if (MP.view === 'lines') drawMapLines(g, W, H, col);
+    else drawMapHeat(g, W, H, col);
+  }
+
+  /** Points of the current 2-D slice (third axis at the chosen value). */
+  function slicePts() {
+    const sp = MP.spec;
+    if (sp.axes.length < 3) return MP.pts;
+    const z = sp.axes[2].grid[Math.min(MP.slice, sp.axes[2].grid.length - 1)];
+    return MP.pts.filter(p => sameV(p.v[2], z));
+  }
+
+  const axisName = a => `${a.p.name}${a.p.unit ? ', ' + a.p.unit : ''}`;
+  const tick = x => +(+x).toPrecision(3) + '';
+
+  function drawMapHeat(g, W, H, col) {
+    const sp = MP.spec, [A, Bx] = sp.axes, key = MAP_METRICS[$('mpMetric').value] ? $('mpMetric').value : 'force', M = MAP_METRICS[key], pts = slicePts();
+    const L = 50, R = 62, T = 24, B = 30;
+    const sx = x => L + (x - A.lo) / (A.hi - A.lo) * (W - L - R), sy = y => H - B - (y - Bx.lo) / (Bx.hi - Bx.lo) * (H - B - T);
+    const vals = pts.map(p => mapValue(p, key)).filter(v => v != null);
+    let v0 = vals.length ? Math.min(...vals) : 0, v1 = vals.length ? Math.max(...vals) : 1;
+    if (v1 - v0 < 1e-12) v1 = v0 + 1e-12;
+    const t01 = v => (v - v0) / (v1 - v0);
+    const edges = gr => gr.map((x, i) => [i ? 0.5 * (gr[i - 1] + x) : x, i < gr.length - 1 ? 0.5 * (x + gr[i + 1]) : x]);
+    const ex = edges(A.grid), ey = edges(Bx.grid);
+    A.grid.forEach((x, i) => Bx.grid.forEach((y, j) => {
+      const p = pts.find(q => sameV(q.v[0], x) && sameV(q.v[1], y));
+      const X0 = sx(ex[i][0]), X1 = sx(ex[i][1]), Y0 = sy(ey[j][1]), Y1 = sy(ey[j][0]);
+      const w = Math.max(1, X1 - X0), h = Math.max(1, Y1 - Y0);
+      if (!p) { g.strokeStyle = col.line; g.lineWidth = 1; g.strokeRect(X0 + 0.5, Y0 + 0.5, w - 1, h - 1); return; }
+      const v = mapValue(p, key);
+      if (v == null) {
+        g.fillStyle = col.line; g.fillRect(X0, Y0, w + 0.5, h + 0.5);
+        const cx = (X0 + X1) / 2, cy = (Y0 + Y1) / 2;
+        g.strokeStyle = col.warn; g.lineWidth = 1.5;
+        g.beginPath(); g.moveTo(cx - 4, cy - 4); g.lineTo(cx + 4, cy + 4); g.moveTo(cx + 4, cy - 4); g.lineTo(cx - 4, cy + 4); g.stroke();
+      } else {
+        g.fillStyle = rgb(ramp(VIRIDIS, t01(v))); g.fillRect(X0, Y0, w + 0.5, h + 0.5);
+        if (p.violations && p.violations.length) {
+          g.save(); g.beginPath(); g.rect(X0, Y0, w, h); g.clip();
+          g.strokeStyle = 'rgba(255,255,255,0.6)'; g.lineWidth = 1;
+          for (let t = -h; t < w; t += 6) { g.beginPath(); g.moveTo(X0 + t, Y1); g.lineTo(X0 + t + h, Y0); g.stroke(); }
+          g.restore();
+        }
+        // cell label: the colour metric and, for force, the steel mass under it
+        if (w > 44 && h > 24) {
+          g.fillStyle = t01(v) > 0.6 ? '#10141a' : '#ffffff';
+          const l1 = fmt(v, M.d), l2 = key === 'force' || key === 'torque' ? `${fmt(p.metrics.steelMassKg, 2)} kg` : `${fmt(p.metrics.Fkgf, 1)} kgf`;
+          g.font = '600 11px sans-serif'; g.fillText(l1, (X0 + X1) / 2 - g.measureText(l1).width / 2, (Y0 + Y1) / 2 - 1);
+          g.font = '10px sans-serif'; g.fillText(l2, (X0 + X1) / 2 - g.measureText(l2).width / 2, (Y0 + Y1) / 2 + 11);
+        }
+      }
+      MP.hits.push({ rect: [X0, Y0, w, h], k: p.k });
+    }));
+    g.font = '10.5px sans-serif'; g.fillStyle = col.ink;
+    const ticks = gr => gr.filter((_, i) => gr.length <= 7 || i % Math.ceil(gr.length / 7) === 0 || i === gr.length - 1);
+    ticks(A.grid).forEach(x => { const s = tick(x); g.fillText(s, sx(x) - g.measureText(s).width / 2, H - B + 13); });
+    ticks(Bx.grid).forEach(y => { const s = tick(y); g.fillText(s, L - 6 - g.measureText(s).width, sy(y) + 3); });
+    const xl = axisName(A); g.fillText(xl, W - R - g.measureText(xl).width, H - 4);
+    g.fillText(axisName(Bx), 4, 11);
+    const cbX = W - R + 14, cbH = H - B - T;
+    for (let t = 0; t < cbH; t++) { g.fillStyle = rgb(ramp(VIRIDIS, 1 - t / cbH)); g.fillRect(cbX, T + t, 10, 1.2); }
+    g.fillStyle = col.ink;
+    g.fillText(tick(v1), cbX + 13, T + 8); g.fillText(tick(v0), cbX + 13, T + cbH);
+    g.save(); g.translate(W - 4, T + cbH / 2); g.rotate(-Math.PI / 2);
+    const ol = `${M.label}, ${M.unit}`; g.fillText(ol, -g.measureText(ol).width / 2, 0); g.restore();
+  }
+
+  function drawMapScatter(g, W, H, col) {
+    const sp = MP.spec, ok = MP.pts.filter(p => mpOk(p) && p.metrics.steelMassKg > 0);
+    const cAx = Math.max(0, Math.min(sp.axes.length - 1, +(($('mpMetric').value || 'ax0').slice(2)) || 0)), CA = sp.axes[cAx];
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    ok.forEach(p => { x0 = Math.min(x0, p.metrics.steelMassKg); x1 = Math.max(x1, p.metrics.steelMassKg); y0 = Math.min(y0, p.metrics.Fkgf); y1 = Math.max(y1, p.metrics.Fkgf); });
+    if (!ok.length) { g.fillText('No solved runs yet.', 10, 20); return; }
+    if (x1 - x0 < 1e-9) { x0 *= 0.95; x1 = x1 * 1.05 + 1e-6; }
+    if (y1 - y0 < 1e-9) { y0 *= 0.95; y1 = y1 * 1.05 + 1e-6; }
+    const px = 0.06 * (x1 - x0), py = 0.08 * (y1 - y0); x0 -= px; x1 += px; y0 -= py; y1 += py;
+    const L = 50, R = 96, T = 18, B = 30;
+    const sx = x => L + (x - x0) / (x1 - x0) * (W - L - R), sy = y => H - B - (y - y0) / (y1 - y0) * (H - B - T);
+    g.strokeStyle = col.line; g.lineWidth = 1; g.fillStyle = col.ink;
+    for (let k = 0; k <= 4; k++) {
+      const y = y0 + (y1 - y0) * k / 4, x = x0 + (x1 - x0) * k / 4;
+      g.beginPath(); g.moveTo(L, sy(y)); g.lineTo(W - R, sy(y)); g.stroke();
+      g.fillText(tick(y), 4, sy(y) + 3);
+      const s = tick(x); g.fillText(s, sx(x) - g.measureText(s).width / 2, H - B + 13);
+    }
+    g.fillText('Brake force, kgf', L, 11);
+    const xl = 'Steel mass, kg'; g.fillText(xl, W - R - g.measureText(xl).width, H - 4);
+    // frontier: most force for the least steel
+    const front = FS.pareto(ok.map(p => ({ x: p.metrics.steelMassKg, y: p.metrics.Fkgf, p })));
+    g.strokeStyle = col.ok; g.lineWidth = 1.6; g.setLineDash([5, 4]); g.beginPath();
+    front.forEach((q, k) => (k ? g.lineTo(sx(q.x), sy(q.y)) : g.moveTo(sx(q.x), sy(q.y)))); g.stroke(); g.setLineDash([]);
+    const tc = x => (CA.hi > CA.lo ? (x - CA.lo) / (CA.hi - CA.lo) : 0.5);
+    for (const p of ok) {
+      const X = sx(p.metrics.steelMassKg), Y = sy(p.metrics.Fkgf);
+      g.beginPath(); g.arc(X, Y, 5, 0, 2 * Math.PI);
+      g.fillStyle = rgb(ramp(VIRIDIS, tc(p.v[cAx]))); g.fill();
+      g.strokeStyle = p.violations && p.violations.length ? col.warn : 'rgba(0,0,0,0.35)'; g.lineWidth = p.violations && p.violations.length ? 1.6 : 0.8; g.stroke();
+      MP.hits.push({ x: X, y: Y, r: 7, k: p.k });
+    }
+    // colour key
+    const cbX = W - R + 16, cbH = H - B - T;
+    for (let t = 0; t < cbH; t++) { g.fillStyle = rgb(ramp(VIRIDIS, 1 - t / cbH)); g.fillRect(cbX, T + t, 10, 1.2); }
+    g.fillStyle = col.ink;
+    g.fillText(tick(CA.hi), cbX + 13, T + 8); g.fillText(tick(CA.lo), cbX + 13, T + cbH);
+    g.save(); g.translate(W - 6, T + cbH / 2); g.rotate(-Math.PI / 2);
+    const ol = axisName(CA); g.fillText(ol, -g.measureText(ol).width / 2, 0); g.restore();
+    g.fillStyle = col.ok; g.fillText('-- lightest for its force', L + 6, T + 12);
+  }
+
+  function drawMapLines(g, W, H, col) {
+    const sp = MP.spec, [A, Bx] = sp.axes, pts = slicePts().filter(mpOk);
+    if (!pts.length) { g.fillText('No solved runs yet.', 10, 20); return; }
+    let y0 = Math.min(...pts.map(p => p.metrics.Fkgf)), y1 = Math.max(...pts.map(p => p.metrics.Fkgf));
+    if (y1 - y0 < 1e-9) { y0 *= 0.95; y1 = y1 * 1.05 + 1e-6; }
+    const py = 0.08 * (y1 - y0); y0 -= py; y1 += py;
+    const L = 50, R = 110, T = 18, B = 30;
+    const sx = x => L + (x - A.lo) / (A.hi - A.lo) * (W - L - R), sy = y => H - B - (y - y0) / (y1 - y0) * (H - B - T);
+    g.strokeStyle = col.line; g.lineWidth = 1; g.fillStyle = col.ink;
+    for (let k = 0; k <= 4; k++) {
+      const y = y0 + (y1 - y0) * k / 4, x = A.lo + (A.hi - A.lo) * k / 4;
+      g.beginPath(); g.moveTo(L, sy(y)); g.lineTo(W - R, sy(y)); g.stroke();
+      g.fillText(tick(y), 4, sy(y) + 3);
+      const s = tick(x); g.fillText(s, sx(x) - g.measureText(s).width / 2, H - B + 13);
+    }
+    g.fillText('Brake force, kgf', L, 11);
+    const xl = axisName(A); g.fillText(xl, W - R - g.measureText(xl).width, H - 4);
+    Bx.grid.forEach((y, j) => {
+      const line = pts.filter(p => sameV(p.v[1], y)).sort((a, b) => a.v[0] - b.v[0]);
+      const c = rgb(ramp(VIRIDIS, Bx.grid.length > 1 ? j / (Bx.grid.length - 1) : 0.5));
+      g.strokeStyle = c; g.lineWidth = 2; g.beginPath();
+      line.forEach((p, k) => (k ? g.lineTo(sx(p.v[0]), sy(p.metrics.Fkgf)) : g.moveTo(sx(p.v[0]), sy(p.metrics.Fkgf)))); g.stroke();
+      line.forEach(p => {
+        const X = sx(p.v[0]), Y = sy(p.metrics.Fkgf);
+        g.fillStyle = c; g.beginPath(); g.arc(X, Y, 3.5, 0, 2 * Math.PI); g.fill();
+        MP.hits.push({ x: X, y: Y, r: 7, k: p.k });
+      });
+      g.fillStyle = c; g.fillRect(W - R + 12, T + 4 + j * 15, 12, 3);
+      g.fillStyle = col.ink; g.fillText(`${FS.expr(y, Bx.p.unit)}`, W - R + 28, T + 9 + j * 15);
+    });
+    g.fillStyle = col.ink; g.fillText(Bx.p.name, W - R + 12, T - 4);
+  }
+
+  function mapHit(ev) {
+    const rc = ev.target.getBoundingClientRect(), x = ev.clientX - rc.left, y = ev.clientY - rc.top;
+    return MP.hits.find(t => (t.rect ? x >= t.rect[0] && x <= t.rect[0] + t.rect[2] && y >= t.rect[1] && y <= t.rect[1] + t.rect[3]
+      : Math.hypot(x - t.x, y - t.y) <= t.r));
+  }
+
+  function previewMap(k) {
+    const p = MP.pts.find(z => z.k === k);
+    if (!p || !p.geo) return;
+    if (ST.preview == null) ST.baseGeo = S.geo;
+    ST.preview = 'map:' + k;
+    loadGeometry(p.geo, { carry: true, label: `preview ${mpLabel(p.v)} (CAD unchanged)` });
+    renderMapResults();
+  }
+
+  function exportMapCSV() {
+    const sp = MP.spec;
+    if (!sp || !MP.pts.length) return;
+    const head = ['run'].concat(sp.axes.map(a => `${a.p.name} (${a.p.unit || '-'})`), ['force_kgf', 'torque_Nm', 'steel_mass_kg', 'steel_mass_source', 'total_mass_kg',
+      'force_per_steel_kg', 'NI_At', 'turns', 'I_A', 'R_ohm', 'P_W', 'J_Amm2', 'steel_B98_T', 'steel_B98_body', 'flux_util', 'gap_B_T', 'status']);
+    const q = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const rows = MP.pts.map(p => {
+      const m = p.metrics || {};
+      const st = p.status === 'ok' ? (p.violations.length ? 'over limit: ' + p.violations.join('; ') : 'ok') : p.status + ': ' + (p.reason || '');
+      return [p.k].concat(p.v, [m.Fkgf, m.T, m.steelMassKg, m.steelMassSource, m.massKg, MAP_METRICS.forcePerSteelKg.get(m), m.NI, m.N, m.I, m.R, m.P, m.J,
+        m.steelB98, m.steelB98Body, m.util, m.Bg, st]).map(q).join(',');
+    });
+    saveText(`${(S.geo && S.geo.source || 'brake').replace(/[^\w.-]+/g, '_')}_${sp.axes.map(a => a.p.name).join('_x_')}_map.csv`, [head.join(',')].concat(rows).join('\n'), 'CSV (*.csv)');
+  }
+
+  const mpTip = document.createElement('div');
+  mpTip.id = 'mpTip';
+  document.body.appendChild(mpTip);
+  $('tab-map').addEventListener('mousemove', ev => {
+    if (ev.target.id !== 'mpChart') { mpTip.style.display = 'none'; return; }
+    const h = mapHit(ev), p = h && MP.pts.find(z => z.k === h.k);
+    if (!p) { mpTip.style.display = 'none'; return; }
+    const m = p.metrics || {};
+    mpTip.textContent = MP.spec.axes.map((a, n) => `${a.p.name} = ${FS.expr(p.v[n], a.p.unit)}`).join('\n') + '\n' +
+      (mpOk(p) ? `Force ${fmt(m.Fkgf, 2)} kgf  ·  torque ${fmt(m.T, 3)} N·m\nSteel ${fmt(m.steelMassKg, 3)} kg  ·  ${fmt(MAP_METRICS.forcePerSteelKg.get(m), 1)} kgf/kg\n${fmt(m.I, 2)} A, ${fmt(m.P, 1)} W` : (p.reason || 'failed'));
+    mpTip.style.display = 'block';
+    mpTip.style.left = Math.min(window.innerWidth - mpTip.offsetWidth - 8, ev.clientX + 14) + 'px';
+    mpTip.style.top = Math.min(window.innerHeight - mpTip.offsetHeight - 8, ev.clientY + 14) + 'px';
+  });
+  $('tab-map').addEventListener('mouseleave', () => { mpTip.style.display = 'none'; });
+  $('tab-map').addEventListener('click', ev => {
+    if (ev.target.id === 'mpChart') { const h = mapHit(ev); if (h) previewMap(h.k); return; }
+    const b = ev.target.closest('[data-mact]');
+    if (b) {
+      const act = b.dataset.mact;
+      if (act === 'load') loadParams();
+      else if (act === 'run') runMap();
+      else if (act === 'stop') { MP.stop = true; status('Stopping after this run…', 'busy'); }
+      else if (act === 'back') { backToBase(); renderMapResults(); }
+      else if (act === 'csv') exportMapCSV();
+      return;
+    }
+    const tr = ev.target.closest('tr[data-mk]');
+    if (tr) previewMap(+tr.dataset.mk);
+  });
+  window.addEventListener('resize', () => { if (!$('tab-map').hidden) drawMap(); });
+
   // ------------------------------------------------------------------ response: inductance, switching, rotor inertia
   const fmtT = s => (s == null || !isFinite(s) ? '–' : s < 1e-3 ? `${(s * 1e6).toFixed(0)} µs` : s < 1 ? `${(s * 1e3).toFixed(s < 0.01 ? 2 : s < 0.1 ? 1 : 0)} ms` : `${s.toFixed(2)} s`);
   const fmtL = L => (!(L > 0) ? '–' : L >= 1 ? `${L.toFixed(2)} H` : `${(L * 1e3).toFixed(L < 0.01 ? 2 : 0)} mH`);
@@ -2046,12 +2548,17 @@
     const m = currentMetrics(), src = $('source').textContent, date = new Date();
     // charts are drawn on a transparent background in the theme's ink: give them the panel colour so they read on paper
     const onPanel = c => {
+      if (!c.width || !c.height) return ''; // chart is in a collapsed section
       const t = document.createElement('canvas'), g = t.getContext('2d');
       t.width = c.width; t.height = c.height;
       g.fillStyle = chartColors().panel; g.fillRect(0, 0, t.width, t.height); g.drawImage(c, 0, 0);
       return t.toDataURL('image/png');
     };
+    const shut = ['dCurve', 'dResp'].filter(id => !$(id).open);
+    shut.forEach(id => { $(id).open = true; });
+    if (shut.length) { const e = elec(); drawCurve(e.NI, S.opT.total); renderResponse(); }
     const imgView = cv.toDataURL('image/png'), imgCurve = onPanel($('curve')), imgResp = onPanel($('respChart'));
+    shut.forEach(id => { $(id).open = false; });
     const tbl = id => { const t = $(id).querySelector('table'); return t ? `<table>${staticCopy(t)}</table>` : '<p>–</p>'; };
     const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Brake report ${esc(src)}</title>
 <style>body{font:13px/1.45 "Segoe UI",Arial,sans-serif;color:#1b2733;max-width:1000px;margin:24px auto;padding:0 16px}
@@ -2060,16 +2567,17 @@ table{border-collapse:collapse;margin:4px 0}th,td{border-bottom:1px solid #e3e7e
 th{background:#f3f5f7;font-weight:600}td.l,th:first-child,table.kv th{text-align:left}table.kv th{background:none;font-weight:normal;color:#5d6b78}
 .big{display:flex;gap:30px;margin:10px 0}.big b{font-size:26px;display:block}.note{color:#5d6b78}.flag{color:#c2412d}.ok{color:#2f7d4f}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:12px 24px}img{max-width:100%;border-radius:4px}.balance{display:none}
-.balance-lbl{display:flex;justify-content:space-between;max-width:320px;color:#5d6b78}
+.balance-lbl{display:flex;justify-content:space-between;max-width:320px;color:#5d6b78}.chip{border:1px solid #c2412d;color:#c2412d;border-radius:10px;padding:0 7px;margin-right:4px;font-size:11px}.chip.okc{border-color:#2f7d4f;color:#2f7d4f}.bal-k{color:#5d6b78;margin:0}.bal-h{font-size:17px;font-weight:600;margin:2px 0}
 @media print{body{margin:0}h2{break-after:avoid}table{break-inside:avoid}}</style></head><body>
 <h1>Magnetic powder brake analysis</h1><p class="note">${esc(src)} · ${date.toLocaleString()} · Ferra Brake Analyzer (axisymmetric nonlinear magnetostatics)</p>
 <div class="big"><div><b>${fmt(m.T, 2)} N·m</b>torque</div><div><b>${fmt(m.F, 1)} kgf</b>at r = ${P.rForce} mm${P.ratio !== 1 ? ` × ${P.ratio}` : ''}</div>
 <div><b>${fmt(m.P, 1)} W</b>coil power</div><div><b>${m.Tcoil != null ? fmt(m.Tcoil, 0) + ' °C' : '–'}</b>steady coil</div></div>
 <h2>Inputs</h2><table class="kv">${inputsSummary().map(([k, v]) => `<tr><th>${esc(k)}</th><td class="l">${esc(v)}</td></tr>`).join('')}</table>
+<h2>Balance</h2>${staticCopy($('balCard'))}
 <h2>Field and what limits torque</h2><div class="cols"><div>${kvTable($('resKV'))}</div><div>${staticCopy($('verdict'))}</div></div>
-<h2>Section</h2><img src="${imgView}" alt="Flux density in the section"><div class="cols"><div><h3>Torque vs ampere-turns</h3><img src="${imgCurve}" alt="Torque curve"></div>
-<div><h3>Switching (torque vs time)</h3><img src="${imgResp}" alt="Switching transient"></div></div>
-<h2>Coil, thermal and response</h2><div class="cols"><div>${kvTable($('coilKV'))}</div><div>${kvTable($('thermKV'))}</div><div>${kvTable($('respKV'))}</div><div>${staticCopy($('levers').parentNode)}</div></div>
+<h2>Section</h2><img src="${imgView}" alt="Flux density in the section"><div class="cols">${imgCurve ? `<div><h3>Torque vs ampere-turns</h3><img src="${imgCurve}" alt="Torque curve"></div>` : ''}
+${imgResp ? `<div><h3>Switching (torque vs time)</h3><img src="${imgResp}" alt="Switching transient"></div>` : ''}</div>
+<h2>Coil, thermal and response</h2><div class="cols"><div>${kvTable($('coilKV'))}${kvTable($('coilMoreKV'))}</div><div>${kvTable($('thermKV'))}</div><div>${kvTable($('respKV'))}</div><div>${staticCopy($('levers').parentNode)}</div></div>
 <h2>Bodies</h2>${tbl('tab-bodies')}<h2>Working gaps</h2>${tbl('tab-gaps')}
 ${S.snaps.length ? `<h2>Design comparison</h2>${compareTable(S.snaps, true)}` : ''}
 ${SEC.cmp ? `<h2>Section-angle check</h2>${staticCopy($('secOut'))}` : ''}
@@ -2081,12 +2589,25 @@ ${SEC.cmp ? `<h2>Section-angle check</h2>${staticCopy($('secOut'))}` : ''}
     saveText((S.geo.source || 'brake').replace(/[^\w.-]+/g, '_') + '_report.html', html, 'HTML (*.html)');
   }
 
+  // ------------------------------------------------------------------ collapsible sections
+  // Open/closed state is a per-viewer convenience; canvases inside a closed <details> have no size, so redraw on open.
+  document.querySelectorAll('details[id]').forEach(d => {
+    try { const v = localStorage.getItem('ferra.fold.' + d.id); if (v != null) d.open = v === '1'; } catch (e) { /* storage unavailable */ }
+    d.addEventListener('toggle', () => {
+      try { localStorage.setItem('ferra.fold.' + d.id, d.open ? '1' : '0'); } catch (e) { /* storage unavailable */ }
+      if (!d.open) return;
+      if (d.id === 'dCurve' && S.sweep) { const e = elec(); drawCurve(e.NI, S.opT && !S.stale ? S.opT.total : torqueAt(e.NI)); }
+      if (d.id === 'dResp') renderResponse();
+    });
+  });
+
   // ------------------------------------------------------------------ boot
   renderSettings();
   updateElectrical();
   renderStudy();
+  renderMap();
   window.addEventListener('load', () => {
     if (inFusion()) setTimeout(() => $('btnExtract').click(), 300);
   });
-  window.FerraUI = { S, P, ST, loadGeometry };
+  window.FerraUI = { S, P, ST, MP, loadGeometry };
 })();
