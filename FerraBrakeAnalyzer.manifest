@@ -1,0 +1,13 @@
+{
+  "autodeskProduct": "Fusion",
+  "type": "addin",
+  "id": "de98530a-dcc7-4d4c-8531-12df3cff24f8",
+  "author": "Ferra",
+  "description": {
+    "": "Magnetic powder brake analyzer: section-based nonlinear axisymmetric FEM for torque, flux bottlenecks, saturation and coil sizing."
+  },
+  "version": "0.1.0",
+  "runOnStartup": false,
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}

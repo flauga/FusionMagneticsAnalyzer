@@ -1,0 +1,10 @@
+# local tooling / session data
+.remember/
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+
+# section dumps from tools/fusion_section_check.js
+tools/_fusion_*.json

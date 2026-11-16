@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ferra Brake Analyzer</title>
+<style>
+  :root {
+    --bg: #eef0f2; --panel: #ffffff; --ink: #1b2733; --muted: #5d6b78; --line: #d5dbe1;
+    --steel: #5b7083; --copper: #b5652a; --copper-soft: #f3e3d6; --warn: #c2412d; --ok: #2f7d4f;
+    --canvas: #12161b; --outline: #e9eef3;
+    --font: "Artifakt Element", "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1d2125; --panel: #262b30; --ink: #e6eaee; --muted: #9aa6b2; --line: #39414a;
+      --steel: #8ea3b6; --copper: #d08a52; --copper-soft: #3a2e25; --warn: #ef6b57; --ok: #5fb884; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 12.5px/1.45 var(--font); }
+  body { display: grid; grid-template-columns: 280px minmax(0, 1fr) 300px; grid-template-rows: auto minmax(0, 1fr);
+    height: 100vh; gap: 8px; padding: 8px; }
+  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0 8px 0 0; letter-spacing: 0.01em; }
+  header .src { color: var(--muted); }
+  header .spacer { flex: 1; }
+  #status { color: var(--muted); text-align: right; flex-basis: 100%; font-variant-numeric: tabular-nums; }
+  #status.busy { color: var(--copper); }
+  #status.err { color: var(--warn); }
+  button, select, input { font: inherit; color: inherit; }
+  button { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+  button:hover { border-color: var(--steel); }
+  button.primary { background: var(--steel); color: #fff; border-color: var(--steel); }
+  button.on { background: var(--copper); color: #fff; border-color: var(--copper); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--copper); outline-offset: 1px; }
+  select, input[type=number] { background: var(--panel); border: 1px solid var(--line); border-radius: 3px; padding: 2px 4px; }
+  input[type=number] { width: 72px; text-align: right; font-variant-numeric: tabular-nums; }
+  aside, main, section.results { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; min-height: 0; overflow: auto; }
+  aside { padding: 12px; display: flex; flex-direction: column; gap: 14px; }
+  h2 { font-size: 12.5px; font-weight: 600; margin: 0 0 6px; color: var(--muted); }
+  .slider { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 2px 8px; }
+  .slider label { font-weight: 600; }
+  .slider output { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--copper); }
+  .slider output small { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .slider input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--copper); }
+  .slider .hint { grid-column: 1 / -1; color: var(--muted); }
+  dl.kv { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; margin: 0; font-variant-numeric: tabular-nums; }
+  dl.kv dt { color: var(--muted); }
+  dl.kv dd { margin: 0; text-align: right; }
+  dl.kv dd.flag { color: var(--warn); }
+  main { display: grid; grid-template-rows: minmax(260px, 1.25fr) auto minmax(180px, 1fr); }
+  #viewWrap { position: relative; background: var(--canvas); border-radius: 6px 6px 0 0; min-height: 0; }
+  #view { width: 100%; height: 100%; display: block; cursor: crosshair; }
+  #tip { position: absolute; pointer-events: none; background: rgba(15,18,22,0.92); color: #e9eef3; padding: 5px 8px;
+    border-radius: 4px; font-variant-numeric: tabular-nums; white-space: pre; display: none; font-size: 11.5px; }
+  #legend { position: absolute; right: 10px; top: 10px; color: #cfd6dd; font-size: 11px; text-align: right; }
+  #legend canvas { display: block; margin-top: 3px; border-radius: 2px; }
+  #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #9aa6b2; padding: 20px; text-align: center; }
+  .toolbar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .toolbar .sep { flex: 1; }
+  .tabs { display: flex; gap: 2px; }
+  .tabs button { border-radius: 4px 4px 0 0; border-bottom: none; }
+  .tabs button[aria-selected=true] { background: var(--steel); color: #fff; border-color: var(--steel); }
+  .tabpanel { overflow: auto; padding: 0 8px 8px; min-height: 0; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  th { font-weight: 600; color: var(--muted); position: sticky; top: 0; background: var(--panel); z-index: 1; }
+  th:first-child, td:first-child, td.l, th.l { text-align: left; }
+  tr.sel td { background: var(--copper-soft); }
+  tr.neck td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+  tr.best td { color: var(--ok); font-weight: 600; }
+  tr.cur td { background: var(--copper-soft); }
+  td .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  td.hot { color: var(--warn); font-weight: 600; }
+  section.results { padding: 12px; display: flex; flex-direction: column; gap: 14px; }
+  .big { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .big div { border-left: 3px solid var(--copper); padding-left: 8px; }
+  .big b { display: block; font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.15; }
+  .big span { color: var(--muted); }
+  .verdict { border: 1px solid var(--line); border-radius: 5px; padding: 8px 10px; }
+  .verdict.steel { border-color: var(--warn); }
+  .verdict p { margin: 0 0 6px; }
+  .verdict p:last-child { margin: 0; }
+  .verdict strong { font-weight: 600; }
+  #curve { width: 100%; height: 170px; display: block; }
+  .settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 4px 18px; padding-top: 8px; }
+  .settings label { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 2px 0; }
+  .settings h3 { grid-column: 1 / -1; font-size: 12px; margin: 10px 0 2px; color: var(--muted); font-weight: 600; }
+  .note { color: var(--muted); }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  #warnings { color: var(--warn); }
+  .regime { margin: 0 0 6px; }
+  .warn { color: var(--warn); }
+  table.mini th, table.mini td { padding: 2px 4px; }
+  table.mini th { position: static; }
+  table.mini td.l, table.mini th.l { white-space: normal; }
+  #levers { font-size: 11.5px; }
+  td.mute { color: var(--muted); }
+  .stale { opacity: 0.55; transition: opacity 0.15s; }
+  .verdict p.head { font-size: 13.5px; }
+  .verdict table.mini { margin: 4px 0 8px; }
+  .balance { height: 8px; border-radius: 4px; background: var(--steel); overflow: hidden; margin: 2px 0 2px; }
+  .balance span { display: block; height: 100%; background: var(--warn); margin-left: auto; }
+  .study { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(280px, 1.25fr); gap: 8px 16px; padding-top: 8px; }
+  .study-setup { display: flex; flex-direction: column; gap: 6px; }
+  .study-setup p { margin: 0; }
+  .study-setup .row label { display: inline-flex; gap: 4px; align-items: center; }
+  .study input[type=number] { width: 66px; }
+  .study-out canvas { width: 100%; height: 240px; display: block; }
+  .study-out p { margin: 4px 0; }
+  .study-table { grid-column: 1 / -1; }
+  .study-empty { padding: 12px 0; }
+  .study-empty p { margin: 0 0 8px; }
+  label.chk { display: flex; gap: 6px; align-items: center; }
+  .study [hidden] { display: none !important; }
+  .axis2 { border-left: 3px solid var(--line); padding-left: 8px; display: flex; flex-direction: column; gap: 6px; }
+  #stChart { cursor: pointer; }
+  tr[data-k] { cursor: pointer; }
+  tr.prev td { background: var(--copper-soft); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  @media (max-width: 1100px) { .study { grid-template-columns: 1fr; } }
+  .mat { display: flex; flex-direction: column; gap: 10px; padding-top: 6px; }
+  .mat > div:first-child { overflow-x: auto; }
+  .mat td.l { white-space: normal; }
+  .mat-side { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(220px, 1fr); gap: 12px 16px; align-items: start; }
+  .mat-import { display: flex; flex-direction: column; gap: 6px; }
+  .mat-side h3 { font-size: 12px; margin: 6px 0 0; color: var(--muted); font-weight: 600; }
+  .mat input[type=number] { width: 58px; }
+  #bhChart { width: 100%; height: 190px; display: block; }
+  textarea, input[type=text] { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 3px; padding: 4px; width: 100%; }
+  label.stack { display: flex; flex-direction: column; gap: 2px; }
+  tr.unused td { opacity: 0.6; }
+  select.grade { max-width: 190px; }
+  #lineChart { width: 100%; height: 180px; display: block; margin-top: 8px; }
+  .probes-bar { padding: 6px 0; }
+  tr[data-pl] { cursor: pointer; }
+  @media (max-width: 1100px) { .mat-side { grid-template-columns: 1fr; } }
+  .balance-lbl { display: flex; justify-content: space-between; color: var(--muted); font-size: 11.5px; margin-bottom: 6px; }
+  @media (max-width: 900px) { body { grid-template-columns: 1fr; grid-template-rows: auto; height: auto; } main { min-height: 700px; } }
+  #respChart { width: 100%; height: 96px; display: block; margin-top: 6px; }
+  .flag { color: var(--warn); }
+  .ok { color: var(--ok); }
+  tr.flagrow td:first-child { box-shadow: inset 3px 0 var(--warn); }
+  .sections, .compare-wrap { display: flex; flex-direction: column; gap: 8px; padding-top: 6px; }
+  .sections .row, .compare-wrap .row { flex-wrap: wrap; }
+  table.compare td, table.compare th { vertical-align: top; }
+  table.compare th button { padding: 1px 6px; margin: 3px 3px 0 0; font-size: 11px; }
+  table.compare img { border-radius: 3px; display: block; }
+  #calOut table { margin: 4px 0; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Ferra Brake Analyzer</h1>
+  <span class="src" id="source">No geometry loaded</span>
+  <span class="spacer"></span>
+  <label>Axis <select id="axis"><option value="auto">Auto</option><option value="x">X</option><option value="y">Y</option><option value="z">Z</option></select></label>
+  <label>Section angle <input id="angle" type="number" value="0" step="15"> °</label>
+  <button class="primary" id="btnExtract">Read design from Fusion</button>
+  <button id="btnOpen">Open JSON</button>
+  <button id="btnSave">Save JSON</button>
+  <button id="btnDemo">Load demo brake</button>
+  <span id="status">Idle</span>
+  <input type="file" id="fileIn" accept=".json" hidden>
+</header>
+
+<aside>
+  <div>
+    <div class="slider">
+      <label for="sV">Supply voltage</label><output id="oV">24 <small>V</small></output>
+      <input id="sV" type="range" min="3" max="60" step="0.5" value="24">
+    </div>
+  </div>
+  <div>
+    <div class="slider">
+      <label for="sG">Wire gauge</label><output id="oG">SWG 27 <small>0.417 mm</small></output>
+      <input id="sG" type="range" min="18" max="38" step="1" value="27">
+      <span class="hint" id="gHint"></span>
+    </div>
+  </div>
+  <div>
+    <h2>Coil</h2>
+    <dl class="kv" id="coilKV"></dl>
+  </div>
+  <div>
+    <h2>What moves the ampere-turns</h2>
+    <p class="regime" id="regime"></p>
+    <table class="mini" id="levers"></table>
+  </div>
+  <div>
+    <h2>Thermal (lumped)</h2>
+    <dl class="kv" id="thermKV"></dl>
+    <p class="note" id="thermNote"></p>
+  </div>
+  <div>
+    <h2>Response (inductance)</h2>
+    <dl class="kv" id="respKV"></dl>
+    <canvas id="respChart"></canvas>
+    <p class="note" id="respNote"></p>
+  </div>
+  <div>
+    <h2>Coil window</h2>
+    <p class="note" id="coilNote">Mark a body as Coil, or pick the empty winding space in the section.</p>
+    <div class="row"><button id="btnPickCoil">Pick coil window</button><button id="btnClearCoil">Clear pick</button></div>
+  </div>
+  <div id="warnings"></div>
+</aside>
+
+<main>
+  <div id="viewWrap">
+    <canvas id="view"></canvas>
+    <div id="legend"></div>
+    <div id="tip"></div>
+    <div id="empty">Read a design from Fusion, open a saved JSON, or load the demo brake.</div>
+  </div>
+  <div class="toolbar">
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="bodies" aria-selected="true">Bodies</button>
+      <button role="tab" data-tab="gaps" aria-selected="false">Working gaps</button>
+      <button role="tab" data-tab="gauges" aria-selected="false">Gauge sweep</button>
+      <button role="tab" data-tab="study" aria-selected="false">Optimize</button>
+      <button role="tab" data-tab="probes" aria-selected="false">Probes</button>
+      <button role="tab" data-tab="materials" aria-selected="false">Materials</button>
+      <button role="tab" data-tab="sections" aria-selected="false">Section check</button>
+      <button role="tab" data-tab="compare" aria-selected="false">Compare &amp; report</button>
+      <button role="tab" data-tab="settings" aria-selected="false">Model settings</button>
+    </div>
+    <span class="sep"></span>
+    <label>Show <select id="mode">
+      <option value="B">Flux density |B|</option>
+      <option value="sat">Steel saturation</option>
+      <option value="mat">Materials</option>
+    </select></label>
+    <label><input type="checkbox" id="showFlux" checked> Flux lines</label>
+    <button id="btnFit">Fit view</button>
+  </div>
+  <div class="tabpanel" id="tab-bodies"></div>
+  <div class="tabpanel" id="tab-gaps" hidden></div>
+  <div class="tabpanel" id="tab-gauges" hidden></div>
+  <div class="tabpanel" id="tab-study" hidden></div>
+  <div class="tabpanel" id="tab-probes" hidden></div>
+  <div class="tabpanel" id="tab-materials" hidden></div>
+  <div class="tabpanel" id="tab-sections" hidden></div>
+  <div class="tabpanel" id="tab-compare" hidden></div>
+  <div class="tabpanel" id="tab-settings" hidden></div>
+</main>
+
+<section class="results">
+  <div class="big">
+    <div><b id="rT">–</b><span>Torque, N·m</span></div>
+    <div><b id="rF">–</b><span id="rFlabel">Force, kgf</span></div>
+  </div>
+  <dl class="kv" id="resKV"></dl>
+  <div class="verdict" id="verdict"><p class="note">Results appear after the first solve.</p></div>
+  <div>
+    <h2>Torque vs ampere-turns</h2>
+    <canvas id="curve"></canvas>
+  </div>
+</section>
+
+<script src="solver.js"></script>
+<script src="compute.js"></script>
+<script src="insight.js"></script>
+<script src="materials.js"></script>
+<script src="study.js"></script>
+<script src="extras.js"></script>
+<script src="demo.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>
